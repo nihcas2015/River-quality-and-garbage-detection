@@ -10,8 +10,7 @@ MQTT_PORT = 1883
 MQTT_TOPIC_DATA = "river/sensor_data"
 MQTT_TOPIC_STATUS = "river/status"
 
-# Pi Camera V2
-CAMERA_INDEX = 0
+# Pi Camera V2 (via Picamera2)
 FRAME_WIDTH = 640
 FRAME_HEIGHT = 480
 

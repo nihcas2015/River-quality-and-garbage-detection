@@ -191,13 +191,17 @@ Wiring diagram:
    cd ../..            # back to project root
    ```
    This creates a `dashboard/frontend/build/` folder with static files.
-5. **Install Python dependencies:**
+5. **Create a Python virtual environment and install dependencies:**
    ```bash
    cd pi5_central_node
+   python3 -m venv venv
+   source venv/bin/activate
    pip install -r requirements.txt
    ```
+   > On Raspberry Pi OS Bookworm+, `pip install` outside a venv is blocked. Always activate the venv first.
 6. **Start the server:**
    ```bash
+   source venv/bin/activate      # if not already activated
    python server.py
    ```
    The server runs on **port 5000** and hosts both the API and the dashboard.
@@ -218,11 +222,14 @@ Wiring diagram:
    sudo apt install -y mosquitto mosquitto-clients
    sudo systemctl enable mosquitto
    ```
-5. **Install Python dependencies:**
+5. **Create a Python virtual environment and install dependencies:**
    ```bash
    cd pi4_edge_node
+   python3 -m venv venv
+   source venv/bin/activate
    pip install -r requirements.txt
    ```
+   > On Raspberry Pi OS Bookworm+, `pip install` outside a venv is blocked. Always activate the venv first.
 6. **Edit config.py** — set the Pi5 IP address:
    ```python
    SERVER_URL = "http://<PI5_IP>:5000"
@@ -230,6 +237,7 @@ Wiring diagram:
 7. **Place your YOLOv8 model** (`best.pt`) in the `pi4_edge_node/` folder.
 8. **Start the edge node:**
    ```bash
+   source venv/bin/activate      # if not already activated
    python main_edge.py
    ```
 

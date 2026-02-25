@@ -54,9 +54,18 @@ def communication_loop():
     """Periodically send aggregated data + detections to Pi5."""
     last_send = 0
     last_hb = 0
+    registered = False
 
     while running:
         now = time.time()
+
+        # Retry registration until it succeeds
+        if not registered:
+            registered = fc.register()
+            if not registered:
+                log.warning("Pi5 registration pending — will retry in 10 s")
+                time.sleep(10)
+                continue
 
         # Heartbeat
         if now - last_hb >= config.HEARTBEAT_INTERVAL:
@@ -77,17 +86,14 @@ def communication_loop():
 def main():
     log.info("=== Pi4 Edge Node starting ===")
 
-    # 1. Register with Pi5
-    fc.register()
-
-    # 2. Start MQTT subscriber
+    # 1. Start MQTT subscriber
     sensor.start()
 
-    # 3. Load YOLOv8 model & open camera
+    # 2. Load YOLOv8 model & open camera
     detector.load_model()
     detector.open_camera()
 
-    # 4. Launch threads
+    # 3. Launch threads (registration handled inside communication_loop)
     threads = [
         threading.Thread(target=sensor_loop, daemon=True),
         threading.Thread(target=detection_loop, daemon=True),

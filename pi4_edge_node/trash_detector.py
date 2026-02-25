@@ -1,7 +1,7 @@
 """YOLOv8 trash detector — runs inference on Pi Camera V2 frames."""
 
 import logging
-import cv2
+import numpy as np
 from ultralytics import YOLO
 import config
 
@@ -26,24 +26,32 @@ class TrashDetector:
             return False
 
     def open_camera(self):
-        """Open Pi Camera V2 via OpenCV."""
-        self.camera = cv2.VideoCapture(config.CAMERA_INDEX)
-        if self.camera.isOpened():
-            self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, config.FRAME_WIDTH)
-            self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, config.FRAME_HEIGHT)
-            log.info("Camera opened (index %d)", config.CAMERA_INDEX)
+        """Open Pi Camera V2 using Picamera2 (required on Bookworm+)."""
+        try:
+            from picamera2 import Picamera2
+            self.camera = Picamera2()
+            cam_config = self.camera.create_still_configuration(
+                main={"size": (config.FRAME_WIDTH, config.FRAME_HEIGHT),
+                      "format": "RGB888"}
+            )
+            self.camera.configure(cam_config)
+            self.camera.start()
+            log.info("Pi Camera V2 opened via Picamera2 (%dx%d)",
+                     config.FRAME_WIDTH, config.FRAME_HEIGHT)
             return True
-        log.error("Cannot open camera")
-        return False
+        except Exception as e:
+            log.error("Cannot open camera: %s", e)
+            return False
 
     def detect(self):
         """Capture one frame and run YOLO inference. Returns dict."""
-        if self.camera is None or not self.camera.isOpened():
+        if self.camera is None:
             return {"trash_count": 0, "detections": []}
 
-        ret, frame = self.camera.read()
-        if not ret:
-            log.warning("Frame capture failed")
+        try:
+            frame = self.camera.capture_array()
+        except Exception as e:
+            log.warning("Frame capture failed: %s", e)
             return {"trash_count": 0, "detections": []}
 
         results = self.model(frame, conf=config.CONFIDENCE, verbose=False)
@@ -64,5 +72,8 @@ class TrashDetector:
 
     def release(self):
         if self.camera:
-            self.camera.release()
+            try:
+                self.camera.stop()
+            except Exception:
+                pass
             log.info("Camera released")
