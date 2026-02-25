@@ -21,8 +21,9 @@ CONFIDENCE = 0.5
 # Timing (seconds)
 SENSOR_POLL = 5
 DETECTION_INTERVAL = 2
-SEND_INTERVAL = 30
+SEND_INTERVAL = 10
 HEARTBEAT_INTERVAL = 15
+FEDERATION_INTERVAL = 120   # seconds between federated learning rounds
 
 # Anomaly thresholds
 TEMP_MIN = 4.0

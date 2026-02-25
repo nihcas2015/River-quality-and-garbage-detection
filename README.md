@@ -194,7 +194,7 @@ Wiring diagram:
 5. **Create a Python virtual environment and install dependencies:**
    ```bash
    cd pi5_central_node
-   python3 -m venv venv
+   python3 -m venv --system-site-packages venv
    source venv/bin/activate
    pip install -r requirements.txt
    ```
@@ -225,11 +225,11 @@ Wiring diagram:
 5. **Create a Python virtual environment and install dependencies:**
    ```bash
    cd pi4_edge_node
-   python3 -m venv venv
+   python3 -m venv --system-site-packages venv
    source venv/bin/activate
    pip install -r requirements.txt
    ```
-   > On Raspberry Pi OS Bookworm+, `pip install` outside a venv is blocked. Always activate the venv first.
+   > `--system-site-packages` is **required** so the venv can access the system-installed `picamera2` (which cannot be pip-installed without conflicts).
 6. **Edit config.py** — set the Pi5 IP address:
    ```python
    SERVER_URL = "http://<PI5_IP>:5000"

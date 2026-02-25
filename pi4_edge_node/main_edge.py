@@ -78,9 +78,47 @@ def communication_loop():
             anomalies = sensor.detect_anomalies(data)
             fc.send_data(data, latest_detection, anomalies)
             last_send = now
-            log.info("Data sent to Pi5")
+            log.info("Data sent to Pi5  |  temp=%.1f  pH=%.2f  trash=%d",
+                     data.get("temperature", 0), data.get("ph", 0),
+                     latest_detection.get("trash_count", 0))
 
         time.sleep(1)
+
+
+def federation_loop():
+    """Periodically participate in federated learning rounds."""
+    last_round = 0
+
+    # Wait for model to be ready
+    while running and detector.model is None:
+        time.sleep(5)
+
+    log.info("Federation loop started (interval=%ds)", config.FEDERATION_INTERVAL)
+
+    while running:
+        time.sleep(config.FEDERATION_INTERVAL)
+
+        # 1. Extract local detection-head weights
+        weights = detector.get_head_weights()
+        if weights is None:
+            log.warning("Federation: no model weights available")
+            continue
+
+        # 2. Send local update to Pi5
+        if not fc.submit_update(weights):
+            log.warning("Federation: failed to submit update")
+            continue
+
+        # 3. Fetch global aggregated weights
+        global_data = fc.get_global_weights()
+        if global_data and global_data.get("weights"):
+            new_round = global_data.get("round", 0)
+            if new_round > last_round:
+                detector.apply_head_weights(global_data["weights"])
+                last_round = new_round
+                log.info("Federation: applied global model (round %d)", new_round)
+            else:
+                log.debug("Federation: still on round %d", last_round)
 
 
 def main():
@@ -96,19 +134,23 @@ def main():
     sensor.start()
 
     # 2. Load YOLOv8 model & open camera
-    detector.load_model()
-    detector.open_camera()
+    model_ok = detector.load_model()
+    camera_ok = detector.open_camera()
+    if not model_ok:
+        log.error("YOLOv8 model failed to load — detection & federation disabled")
+    if not camera_ok:
+        log.error("Pi Camera failed to open — detection disabled")
 
-    # 3. Launch threads (registration handled inside communication_loop)
+    # 3. Launch threads
     threads = [
-        threading.Thread(target=sensor_loop, daemon=True),
-        threading.Thread(target=detection_loop, daemon=True),
-        threading.Thread(target=communication_loop, daemon=True),
+        threading.Thread(target=sensor_loop, daemon=True, name="sensor"),
+        threading.Thread(target=detection_loop, daemon=True, name="detection"),
+        threading.Thread(target=communication_loop, daemon=True, name="comms"),
+        threading.Thread(target=federation_loop, daemon=True, name="federation"),
     ]
     for t in threads:
         t.start()
-
-    log.info("All threads running. Press Ctrl+C to stop.")
+        log.info("Started thread: %s", t.name)
 
     try:
         while True:

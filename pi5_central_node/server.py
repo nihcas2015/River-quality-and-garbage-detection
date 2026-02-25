@@ -14,6 +14,7 @@ from datetime import datetime
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 from flask_socketio import SocketIO
+from federated_server import FederatedServer
 
 # ── App setup ────────────────────────────────────────────────
 # Serve the React production build from ../dashboard/frontend/build
@@ -47,7 +48,7 @@ nodes = {}            # {node_id: {node_type, registered_at, last_heartbeat, rou
 latest_readings = {}  # {node_id: {sensor_data, detection_result, anomalies, ts}}
 alerts = []           # [{message, severity, type, node_id, timestamp}]
 trash_events = []     # [{node_id, count, timestamp}]
-federation = {"global_round": 0, "weights": None}
+fed_server = FederatedServer(min_nodes=1, round_timeout=300)
 
 
 # ── Helper ───────────────────────────────────────────────────
@@ -153,9 +154,27 @@ def node_heartbeat():
     return jsonify({"status": "ok"})
 
 
+@app.route("/api/federation/submit_update", methods=["POST"])
+def submit_update():
+    """Receive local model weights from an edge node for FedAvg."""
+    d = request.json
+    nid = d.get("node_id")
+    weights = d.get("weights")
+    if not nid or weights is None:
+        return jsonify({"error": "missing node_id or weights"}), 400
+    prev_round = fed_server.current_round
+    fed_server.receive_update(nid, weights)
+    # Update participation counter
+    if nid in nodes:
+        nodes[nid]["rounds_participated"] = fed_server.current_round
+    log.info("Federation update from %s (%d values) — round %d→%d",
+             nid, len(weights), prev_round, fed_server.current_round)
+    return jsonify({"status": "ok", "round": fed_server.current_round})
+
+
 @app.route("/api/federation/global_weights", methods=["GET"])
 def global_weights():
-    return jsonify({"round": federation["global_round"], "weights": federation["weights"]})
+    return jsonify(fed_server.get_global_weights())
 
 
 @app.route("/api/federation/status", methods=["GET"])
@@ -166,7 +185,7 @@ def federation_status():
     return jsonify({
         "total_nodes": len(nodes),
         "active_nodes": active,
-        "global_round": federation["global_round"],
+        "global_round": fed_server.current_round,
         "nodes": list(nodes.values()),
     })
 
@@ -201,6 +220,12 @@ def health():
     return jsonify({"status": "healthy", "uptime": time.process_time()})
 
 
+# Catch-all for unknown /api/* paths — returns 404 instead of index.html
+@app.route("/api/<path:path>")
+def api_not_found(path):
+    return jsonify({"error": f"Unknown API endpoint: /api/{path}"}), 404
+
+
 # ── Serve React dashboard ────────────────────────────────────
 @app.route("/", defaults={"path": ""})
 @app.route("/<path:path>")
@@ -226,7 +251,7 @@ def broadcast_loop():
                                     if (datetime.utcnow() - datetime.fromisoformat(
                                         n["last_heartbeat"].rstrip("Z")
                                     )).total_seconds() < 60),
-                "global_round": federation["global_round"],
+                "global_round": fed_server.current_round,
                 "nodes": list(nodes.values()),
             },
             "latest_readings": latest_readings,

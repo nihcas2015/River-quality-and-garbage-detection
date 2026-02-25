@@ -35,7 +35,6 @@ function App() {
     socket.on('connect', () => {
       console.log('Connected to server');
       setIsConnected(true);
-      socket.emit('subscribe_updates', { room: 'dashboard' });
       fetchInitialData();
     });
 
@@ -44,31 +43,12 @@ function App() {
       setIsConnected(false);
     });
 
-    socket.on('dashboard_update', (data) => {
-      if (data.river_data) {
-        setRiverData(data.river_data);
-      }
-      if (data.federation_status) {
-        setFederationStatus(data.federation_status);
-      }
-    });
-
-    socket.on('data_update', (data) => {
-      // Update latest readings
-      if (data.node_id) {
-        setLatestReadings((prev) => ({
-          ...prev,
-          [data.node_id]: {
-            sensor_data: data.sensor_data,
-            detection_result: data.detection_result,
-            timestamp: new Date().toISOString(),
-          },
-        }));
-      }
-    });
-
-    socket.on('alert', (data) => {
-      setAlerts((prev) => [data, ...prev].slice(0, 50)); // Keep last 50 alerts
+    // Server emits 'river_update' every 5s with all live data
+    socket.on('river_update', (data) => {
+      if (data.river_data) setRiverData(data.river_data);
+      if (data.federation_status) setFederationStatus(data.federation_status);
+      if (data.latest_readings) setLatestReadings(data.latest_readings);
+      if (data.alerts) setAlerts(data.alerts);
     });
 
     return () => {
@@ -81,14 +61,14 @@ function App() {
       setLoading(true);
       const [riverRes, statusRes, readingsRes, alertsRes] = await Promise.all([
         apiClient.get('/dashboard/river_data'),
-        apiClient.get('/federation_status'),
+        apiClient.get('/federation/status'),
         apiClient.get('/dashboard/latest_readings'),
         apiClient.get('/dashboard/alerts?limit=20'),
       ]);
 
       setRiverData(riverRes.data);
       setFederationStatus(statusRes.data);
-      setLatestReadings(readingsRes.data.readings || {});
+      setLatestReadings(readingsRes.data || {});
       setAlerts(alertsRes.data.alerts || []);
     } catch (error) {
       console.error('Error fetching initial data:', error);

@@ -1,6 +1,8 @@
 paho-mqtt==1.6.1
 ultralytics>=8.0.0
-picamera2>=0.3.12
 numpy>=1.24.0
 requests>=2.31.0
 Pillow>=10.0.0
+# picamera2 is NOT listed here — it comes pre-installed as a system
+# package on Raspberry Pi OS Bookworm+. The venv must be created with
+# --system-site-packages so Python can find it.

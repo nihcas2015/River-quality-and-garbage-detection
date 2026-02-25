@@ -70,6 +70,43 @@ class TrashDetector:
             "detections": detections,
         }
 
+    # ── Federated Learning helpers ────────────────────────────
+
+    def get_head_weights(self):
+        """Extract flattened weights from the YOLOv8 detection head."""
+        if self.model is None:
+            return None
+        try:
+            import torch
+            head = self.model.model.model[-1]   # Detect layer
+            weights = []
+            for p in head.parameters():
+                weights.extend(p.detach().cpu().numpy().flatten().tolist())
+            log.info("Extracted %d head-weight values", len(weights))
+            return weights
+        except Exception as e:
+            log.error("Weight extraction failed: %s", e)
+            return None
+
+    def apply_head_weights(self, flat_weights):
+        """Replace detection-head weights with aggregated global weights."""
+        if self.model is None or flat_weights is None:
+            return False
+        try:
+            import torch
+            head = self.model.model.model[-1]
+            idx = 0
+            for p in head.parameters():
+                numel = p.numel()
+                chunk = flat_weights[idx:idx + numel]
+                p.data.copy_(torch.tensor(chunk, dtype=p.dtype).reshape(p.shape))
+                idx += numel
+            log.info("Applied %d global head-weight values", idx)
+            return True
+        except Exception as e:
+            log.error("Weight application failed: %s", e)
+            return False
+
     def release(self):
         if self.camera:
             try:

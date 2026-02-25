@@ -57,12 +57,31 @@ def heartbeat():
         return False
 
 
+def submit_update(weights):
+    """Send local model weights to Pi5 for federated aggregation."""
+    url = f"{BASE}/federation/submit_update"
+    try:
+        r = requests.post(url, json={
+            "node_id": config.NODE_ID,
+            "weights": weights,
+        }, timeout=30)
+        log.info("Submit update → %s  status=%s", url, r.status_code)
+        return r.ok
+    except Exception as e:
+        log.error("Submit update → %s  FAILED: %s", url, e)
+        return False
+
+
 def get_global_weights():
     """Fetch the latest federated model weights from Pi5."""
+    url = f"{BASE}/federation/global_weights"
     try:
-        r = requests.get(f"{BASE}/federation/global_weights", timeout=TIMEOUT)
+        r = requests.get(url, timeout=TIMEOUT)
         if r.ok:
-            return r.json()
-    except Exception:
-        pass
+            data = r.json()
+            log.info("Global weights round=%s  has_weights=%s",
+                     data.get("round"), data.get("weights") is not None)
+            return data
+    except Exception as e:
+        log.debug("Get global weights failed: %s", e)
     return None
