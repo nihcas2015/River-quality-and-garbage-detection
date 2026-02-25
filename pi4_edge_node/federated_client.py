@@ -9,23 +9,27 @@ log = logging.getLogger(__name__)
 BASE = config.SERVER_URL + "/api"
 TIMEOUT = 10
 
+log.info("Pi5 server target: %s", BASE)
+
 
 def register():
     """Register this edge node with the Pi5 server."""
+    url = f"{BASE}/federation/register"
     try:
-        r = requests.post(f"{BASE}/federation/register", json={
+        r = requests.post(url, json={
             "node_id": config.NODE_ID,
             "node_type": "raspberry_pi4",
         }, timeout=TIMEOUT)
-        log.info("Registered with server: %s", r.status_code)
+        log.info("Register → %s  status=%s  body=%s", url, r.status_code, r.text[:200])
         return r.ok
     except Exception as e:
-        log.error("Registration failed: %s", e)
+        log.error("Register → %s  FAILED: %s", url, e)
         return False
 
 
 def send_data(sensor_data, detection_result, anomalies):
     """Send latest readings + detection results to Pi5."""
+    url = f"{BASE}/data/submit"
     try:
         payload = {
             "node_id": config.NODE_ID,
@@ -33,10 +37,11 @@ def send_data(sensor_data, detection_result, anomalies):
             "detection_result": detection_result,
             "anomalies": anomalies,
         }
-        r = requests.post(f"{BASE}/data/submit", json=payload, timeout=TIMEOUT)
+        r = requests.post(url, json=payload, timeout=TIMEOUT)
+        log.info("Send data → %s  status=%s", url, r.status_code)
         return r.ok
     except Exception as e:
-        log.error("Data send failed: %s", e)
+        log.error("Send data → %s  FAILED: %s", url, e)
         return False
 
 
@@ -48,7 +53,7 @@ def heartbeat():
         }, timeout=TIMEOUT)
         return r.ok
     except Exception as e:
-        log.debug("Heartbeat failed: %s", e)
+        log.debug("Heartbeat FAILED: %s", e)
         return False
 
 

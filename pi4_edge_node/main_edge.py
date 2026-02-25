@@ -85,6 +85,12 @@ def communication_loop():
 
 def main():
     log.info("=== Pi4 Edge Node starting ===")
+    log.info("Target Pi5 server: %s", config.SERVER_URL)
+
+    if "<PI5_IP>" in config.SERVER_URL:
+        log.error("config.py still has placeholder <PI5_IP>! "
+                  "Run 'hostname -I' on your Pi5 and update SERVER_URL.")
+        return
 
     # 1. Start MQTT subscriber
     sensor.start()

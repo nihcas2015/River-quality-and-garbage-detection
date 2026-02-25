@@ -17,14 +17,30 @@ from flask_socketio import SocketIO
 
 # ── App setup ────────────────────────────────────────────────
 # Serve the React production build from ../dashboard/frontend/build
-BUILD_DIR = os.path.join(os.path.dirname(__file__), "..", "dashboard", "frontend", "build")
-app = Flask(__name__, static_folder=BUILD_DIR, static_url_path="")
+BUILD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         "..", "dashboard", "frontend", "build")
+app = Flask(__name__, static_folder=None)   # static files handled by catch-all
 CORS(app)
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("server")
+
+
+# ── Request logging ─────────────────────────────────────────
+@app.before_request
+def log_request():
+    if request.path.startswith("/api/"):
+        log.info("◀ %s %s from %s", request.method, request.path, request.remote_addr)
+
+
+@app.after_request
+def log_response(response):
+    if request.path.startswith("/api/"):
+        log.info("▶ %s %s → %s", request.method, request.path, response.status_code)
+    return response
+
 
 # ── In-memory data stores ────────────────────────────────────
 nodes = {}            # {node_id: {node_type, registered_at, last_heartbeat, rounds}}
@@ -75,6 +91,11 @@ def get_river_summary():
 def submit_data():
     d = request.json
     node_id = d.get("node_id", "unknown")
+    log.info("Data received from %s  |  temp=%.1f  pH=%.2f  trash=%d",
+             node_id,
+             d.get("sensor_data", {}).get("temperature", 0),
+             d.get("sensor_data", {}).get("ph", 0),
+             d.get("detection_result", {}).get("trash_count", 0))
     latest_readings[node_id] = {
         "sensor_data": d.get("sensor_data", {}),
         "detection_result": d.get("detection_result", {}),
@@ -117,8 +138,8 @@ def register_node():
         "last_heartbeat": now_iso(),
         "rounds_participated": 0,
     }
-    log.info("Node registered: %s", nid)
-    return jsonify({"status": "registered"})
+    log.info("Node registered: %s (type: %s)", nid, d.get("node_type"))
+    return jsonify({"status": "registered", "node_id": nid})
 
 
 @app.route("/api/federation/heartbeat", methods=["POST"])
@@ -126,6 +147,9 @@ def node_heartbeat():
     nid = request.json.get("node_id")
     if nid in nodes:
         nodes[nid]["last_heartbeat"] = now_iso()
+        log.debug("Heartbeat from %s", nid)
+    else:
+        log.warning("Heartbeat from unknown node: %s", nid)
     return jsonify({"status": "ok"})
 
 
@@ -214,5 +238,7 @@ def broadcast_loop():
 # ── Start ────────────────────────────────────────────────────
 if __name__ == "__main__":
     log.info("=== Pi5 Central Server starting ===")
+    log.info("BUILD_DIR = %s (exists: %s)", BUILD_DIR, os.path.isdir(BUILD_DIR))
+    log.info("Listening on http://0.0.0.0:5000")
     socketio.start_background_task(broadcast_loop)
     socketio.run(app, host="0.0.0.0", port=5000, debug=False)
