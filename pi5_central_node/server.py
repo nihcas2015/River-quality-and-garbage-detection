@@ -58,18 +58,21 @@ def now_iso():
 
 def get_river_summary():
     """Aggregate latest readings across all nodes."""
-    temps, phs, trash_total = [], [], 0
-    anomaly_counts = {"temperature": 0, "ph": 0}
+    temps, phs, turbs, trash_total = [], [], [], 0
+    anomaly_counts = {"temperature": 0, "ph": 0, "turbidity": 0}
     sensor_stats = {}
 
     for v in latest_readings.values():
         sd = v.get("sensor_data", {})
         t = sd.get("temperature")
         p = sd.get("ph")
+        tb = sd.get("turbidity")
         if t is not None:
             temps.append(t)
         if p is not None:
             phs.append(p)
+        if tb is not None:
+            turbs.append(tb)
         trash_total += v.get("detection_result", {}).get("trash_count", 0)
         for k in anomaly_counts:
             if v.get("anomalies", {}).get(k):
@@ -82,6 +85,7 @@ def get_river_summary():
     return {
         "avg_temperature": sum(temps) / len(temps) if temps else 0,
         "avg_ph": sum(phs) / len(phs) if phs else 7,
+        "avg_turbidity": sum(turbs) / len(turbs) if turbs else 0,
         "total_trash_detected": trash_total,
         "anomalies": anomaly_counts,
         "node_count": len(latest_readings),
@@ -98,10 +102,11 @@ def get_river_summary():
 def submit_data():
     d = request.json
     node_id = d.get("node_id", "unknown")
-    log.info("Data received from %s  |  temp=%.1f  pH=%.2f  trash=%d",
+    log.info("Data received from %s  |  temp=%.1f  pH=%.2f  turb=%.0f  trash=%d",
              node_id,
              d.get("sensor_data", {}).get("temperature", 0),
              d.get("sensor_data", {}).get("ph", 0),
+             d.get("sensor_data", {}).get("turbidity", 0),
              d.get("detection_result", {}).get("trash_count", 0))
     latest_readings[node_id] = {
         "sensor_data": d.get("sensor_data", {}),

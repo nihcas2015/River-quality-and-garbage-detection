@@ -114,16 +114,17 @@ class _ChannelTracker:
 
 class AnomalyDetector:
     """
-    Time-series anomaly detector for temperature + pH.
+    Time-series anomaly detector for temperature + pH + turbidity.
 
     Usage:
         ad = AnomalyDetector()
-        result = ad.update(temperature=24.5, ph=7.1)
+        result = ad.update(temperature=24.5, ph=7.1, turbidity=45.0)
         # result = {
         #   "anomaly_detected": True/False,
         #   "anomaly_list": [...],       # list of anomaly dicts
         #   "temperature": True/False,   # backward-compatible flag
         #   "ph": True/False,
+        #   "turbidity": True/False,
         #   "stats": { ... },            # rolling statistics
         # }
     """
@@ -133,6 +134,7 @@ class AnomalyDetector:
         z_thresh = getattr(config, "ANOMALY_Z_THRESHOLD", 2.5)
         temp_spike = getattr(config, "ANOMALY_TEMP_SPIKE", 5.0)
         ph_spike = getattr(config, "ANOMALY_PH_SPIKE", 1.0)
+        turb_spike = getattr(config, "ANOMALY_TURB_SPIKE", 200.0)
         ewma_alpha = getattr(config, "ANOMALY_EWMA_ALPHA", 0.3)
 
         self.temp_tracker = _ChannelTracker(
@@ -147,18 +149,26 @@ class AnomalyDetector:
             window=window, z_thresh=z_thresh,
             spike_thresh=ph_spike, ewma_alpha=ewma_alpha,
         )
+        self.turb_tracker = _ChannelTracker(
+            name="turbidity",
+            abs_min=config.TURBIDITY_MIN, abs_max=config.TURBIDITY_MAX,
+            window=window, z_thresh=z_thresh,
+            spike_thresh=turb_spike, ewma_alpha=ewma_alpha,
+        )
         self.total_anomalies = 0
         log.info("AnomalyDetector initialised (window=%d, z=%.1f, ewma_α=%.2f)",
                  window, z_thresh, ewma_alpha)
 
-    def update(self, temperature, ph):
+    def update(self, temperature, ph, turbidity):
         """Process new sensor values and return anomaly report."""
         all_anomalies = []
         all_anomalies.extend(self.temp_tracker.update(temperature))
         all_anomalies.extend(self.ph_tracker.update(ph))
+        all_anomalies.extend(self.turb_tracker.update(turbidity))
 
         temp_flag = any(a["sensor"] == "temperature" for a in all_anomalies)
         ph_flag = any(a["sensor"] == "ph" for a in all_anomalies)
+        turb_flag = any(a["sensor"] == "turbidity" for a in all_anomalies)
 
         if all_anomalies:
             self.total_anomalies += len(all_anomalies)
@@ -183,6 +193,7 @@ class AnomalyDetector:
             # backward-compatible boolean flags
             "temperature": temp_flag,
             "ph": ph_flag,
+            "turbidity": turb_flag,
             # rich detail
             "anomaly_detected": bool(all_anomalies),
             "anomaly_list": all_anomalies,
@@ -190,5 +201,6 @@ class AnomalyDetector:
             "stats": {
                 "temperature": _stats(self.temp_tracker),
                 "ph": _stats(self.ph_tracker),
+                "turbidity": _stats(self.turb_tracker),
             },
         }

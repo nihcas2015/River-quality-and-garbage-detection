@@ -4,7 +4,7 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   ResponsiveContainer, PieChart, Pie, Cell, RadialBarChart, RadialBar
 } from 'recharts';
-import { Thermometer, Droplet, AlertTriangle, Trash2, Activity, Waves } from 'lucide-react';
+import { Thermometer, Droplet, AlertTriangle, Trash2, Activity, Waves, Eye } from 'lucide-react';
 import MetricCard from '../components/MetricCard';
 import ChartContainer from '../components/ChartContainer';
 import '../styles/Dashboard.css';
@@ -12,7 +12,7 @@ import '../styles/Dashboard.css';
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#8b5cf6'];
 
 /* ── Water Quality Index (0–100) ── */
-function computeWQI(temp, ph) {
+function computeWQI(temp, ph, turbidity) {
   let tScore = 100;
   if (temp < 4 || temp > 35) tScore = 20;
   else if (temp < 10 || temp > 28) tScore = 60;
@@ -23,7 +23,13 @@ function computeWQI(temp, ph) {
   else if (ph < 6.5 || ph > 8.5) pScore = 60;
   else pScore = 100;
 
-  return Math.round((tScore * 0.5 + pScore * 0.5));
+  let turbScore = 100;
+  if (turbidity > 200) turbScore = 20;
+  else if (turbidity > 50) turbScore = 60;
+  else if (turbidity > 5) turbScore = 80;
+  else turbScore = 100;
+
+  return Math.round(tScore * 0.35 + pScore * 0.35 + turbScore * 0.30);
 }
 
 function getWQILabel(wqi) {
@@ -54,13 +60,14 @@ function Dashboard({ riverData, federationStatus, latestReadings, alerts }) {
   /* keep a rolling history of readings (max 30 points) */
   const [timeHistory, setTimeHistory] = useState([]);
 
-  const appendHistory = useCallback((temp, ph) => {
+  const appendHistory = useCallback((temp, ph, turbidity) => {
     setTimeHistory(prev => {
       const now = new Date();
       const point = {
         time: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
         temperature: parseFloat(temp?.toFixed(2)) || 0,
         ph: parseFloat(ph?.toFixed(2)) || 7,
+        turbidity: parseFloat(turbidity?.toFixed(1)) || 0,
       };
       const next = [...prev, point];
       return next.length > 30 ? next.slice(-30) : next;
@@ -69,7 +76,7 @@ function Dashboard({ riverData, federationStatus, latestReadings, alerts }) {
 
   useEffect(() => {
     if (riverData) {
-      appendHistory(riverData.avg_temperature, riverData.avg_ph);
+      appendHistory(riverData.avg_temperature, riverData.avg_ph, riverData.avg_turbidity);
 
       /* If history is empty, seed 6 initial points */
       if (timeHistory.length === 0) {
@@ -81,6 +88,7 @@ function Dashboard({ riverData, federationStatus, latestReadings, alerts }) {
             time: t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
             temperature: parseFloat(((riverData.avg_temperature || 22) + Math.random() * 2 - 1).toFixed(2)),
             ph: parseFloat(((riverData.avg_ph || 7) + Math.random() * 0.5 - 0.25).toFixed(2)),
+            turbidity: parseFloat(((riverData.avg_turbidity || 30) + Math.random() * 10 - 5).toFixed(1)),
           });
         }
         setTimeHistory(seed);
@@ -92,6 +100,7 @@ function Dashboard({ riverData, federationStatus, latestReadings, alerts }) {
         node_id: nodeId.replace('pi4_', ''),
         temperature: data.sensor_data?.temperature || 0,
         ph: data.sensor_data?.ph || 7,
+        turbidity: data.sensor_data?.turbidity || 0,
         trash_count: data.detection_result?.trash_count || 0,
       }));
       setNodeMetrics(metrics);
@@ -102,7 +111,8 @@ function Dashboard({ riverData, federationStatus, latestReadings, alerts }) {
   /* ── derived values ── */
   const avgTemp = riverData?.avg_temperature || 0;
   const avgPh  = riverData?.avg_ph || 7;
-  const wqi = computeWQI(avgTemp, avgPh);
+  const avgTurb = riverData?.avg_turbidity || 0;
+  const wqi = computeWQI(avgTemp, avgPh, avgTurb);
   const wqiInfo = getWQILabel(wqi);
 
   const getTemperatureStatus = () => {
@@ -117,6 +127,12 @@ function Dashboard({ riverData, federationStatus, latestReadings, alerts }) {
     return 'normal';
   };
 
+  const getTurbidityStatus = () => {
+    if (avgTurb > 200) return 'critical';
+    if (avgTurb > 50) return 'warning';
+    return 'normal';
+  };
+
   const anomalyCounts = riverData?.anomalies || {};
   const totalAnomalies = Object.values(anomalyCounts).reduce((a, b) => a + b, 0);
   const totalTrash = riverData?.total_trash_detected || 0;
@@ -125,6 +141,7 @@ function Dashboard({ riverData, federationStatus, latestReadings, alerts }) {
   const anomalyPieData = [
     { name: 'Temperature', value: anomalyCounts.temperature || 0 },
     { name: 'pH Level', value: anomalyCounts.ph || 0 },
+    { name: 'Turbidity', value: anomalyCounts.turbidity || 0 },
     { name: 'Trash', value: totalTrash },
   ].filter(item => item.value > 0);
 
@@ -172,6 +189,13 @@ function Dashboard({ riverData, federationStatus, latestReadings, alerts }) {
           status={wqi >= 80 ? 'normal' : wqi >= 50 ? 'warning' : 'critical'}
         />
         <MetricCard
+          title="Turbidity"
+          value={avgTurb ? avgTurb.toFixed(1) : '--'}
+          unit="NTU"
+          icon={Eye}
+          status={getTurbidityStatus()}
+        />
+        <MetricCard
           title="Trash Detected"
           value={totalTrash}
           unit="items"
@@ -203,7 +227,7 @@ function Dashboard({ riverData, federationStatus, latestReadings, alerts }) {
       </div>
 
       {/* ── Sensor Statistics (from Time-Series Anomaly Model) ── */}
-      {(sensorStats.temperature || sensorStats.ph) && (
+      {(sensorStats.temperature || sensorStats.ph || sensorStats.turbidity) && (
         <div className="sensor-stats-bar">
           <h3><Activity size={16} /> Time-Series Sensor Analysis</h3>
           <div className="stats-row">
@@ -227,13 +251,23 @@ function Dashboard({ riverData, federationStatus, latestReadings, alerts }) {
                 <p className="stat-samples">{sensorStats.ph.samples} samples</p>
               </div>
             )}
+            {sensorStats.turbidity && (
+              <div className="stat-block">
+                <p className="stat-title">Turbidity</p>
+                <p>EWMA: <strong>{sensorStats.turbidity.ewma ?? '--'} NTU</strong></p>
+                <p>Mean: {sensorStats.turbidity.mean ?? '--'} NTU</p>
+                <p>Std: ±{sensorStats.turbidity.std ?? '--'}</p>
+                <p>Range: [{sensorStats.turbidity.min ?? '--'}–{sensorStats.turbidity.max ?? '--'}]</p>
+                <p className="stat-samples">{sensorStats.turbidity.samples} samples</p>
+              </div>
+            )}
           </div>
         </div>
       )}
 
       {/* ── Charts Row 1: Sensor Trends + Water Quality Gauge ── */}
       <div className="charts-row">
-        <ChartContainer title="Temperature & pH — Live Trend" className="chart-wide">
+        <ChartContainer title="Sensor Trends — Live" className="chart-wide">
           <ResponsiveContainer width="100%" height={300}>
             <LineChart data={displayHistory}>
               <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
@@ -261,6 +295,17 @@ function Dashboard({ riverData, federationStatus, latestReadings, alerts }) {
                 strokeWidth={2}
                 dot={false}
                 animationDuration={500}
+              />
+              <Line
+                yAxisId="left"
+                type="monotone"
+                dataKey="turbidity"
+                stroke="#22c55e"
+                name="Turbidity (NTU)"
+                strokeWidth={2}
+                dot={false}
+                animationDuration={500}
+                strokeDasharray="5 3"
               />
             </LineChart>
           </ResponsiveContainer>
@@ -323,6 +368,7 @@ function Dashboard({ riverData, federationStatus, latestReadings, alerts }) {
               <Legend />
               <Bar dataKey="temperature" fill="#ef4444" name="Temp (°C)" radius={[4, 4, 0, 0]} />
               <Bar dataKey="ph" fill="#3b82f6" name="pH" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="turbidity" fill="#22c55e" name="Turbidity" radius={[4, 4, 0, 0]} />
               <Bar dataKey="trash_count" fill="#8b5cf6" name="Trash" radius={[4, 4, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>

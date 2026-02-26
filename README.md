@@ -40,6 +40,8 @@ A real-time river water quality monitoring system using **ESP32-S3**, **Raspberr
 | Microcontroller | **ESP32-S3-N16R8** (16 MB Flash, 8 MB PSRAM) | 1 |
 | Temperature sensor | **DS18B20** waterproof probe | 1 |
 | pH sensor module | Analog pH sensor with **9V DC** power (2-pin power + 2-pin output) | 1 |
+| Turbidity sensor | **TSD-10** analog turbidity sensor + adapter board (5V) | 1 |
+| Resistors | 1 kΩ + 1.5 kΩ (voltage divider for turbidity sensor) | 1 each |
 | Edge computer | **Raspberry Pi 4** (4 GB+ RAM) | 1 |
 | Camera | **Raspberry Pi Camera Module V2** | 1 |
 | Central server | **Raspberry Pi 5** (4 GB+ RAM) | 1 |
@@ -120,7 +122,49 @@ Wiring diagram:
 
 > **Important:** The pH module needs its own **9V DC power supply**. Do NOT power it from the ESP32's 3.3V or 5V — it will not work correctly.
 
-### 3. Raspberry Pi 4 + Pi Camera V2
+### 3. ESP32-S3-N16R8 + Turbidity Sensor (TSD-10)
+
+The TSD-10 sensor + adapter board outputs an **analog voltage** (0–4.5V) that decreases as turbidity increases. Since the ESP32-S3 ADC only accepts **0–3.3V**, a voltage divider is required.
+
+```
+TSD-10 Turbidity Sensor (3 wires from adapter board):
+
+  RED wire ──────── 5V   (from USB or external 5V supply, NOT ESP32 3.3V)
+  BLACK wire ────── GND  (shared with ESP32 GND)
+  YELLOW wire ───── Signal (analog 0–4.5V output)
+
+  ⚠ Voltage divider required (5V → 3.3V range):
+    YELLOW (signal) → 1 kΩ resistor → junction → 1.5 kΩ resistor → GND
+                                       │
+                                       └──── GPIO 2  (ESP32-S3, ADC1_CH1)
+
+Wiring diagram:
+
+  5V Supply              TSD-10 board       ESP32-S3
+  ─────────              ──────────         ────────
+  5V ──────────────────► RED
+  GND ──────────┬──────► BLACK
+                │                           GND
+                │
+                │        YELLOW (signal)
+                │            │
+                │        [1 kΩ resistor]
+                │            │
+                │            ├─────────────► GPIO 2
+                │            │
+                │        [1.5 kΩ resistor]
+                │            │
+                └────────────┘
+
+  Voltage at GPIO 2 = V_signal × 1.5 / (1 + 1.5)
+                    = V_signal × 0.6
+  Clean water: ~4.2V × 0.6 ≈ 2.52V → 0 NTU
+  Very turbid: ~0V              → ~3000 NTU
+```
+
+> **Calibration:** Dip the sensor in **clean water** and note the ADC voltage → update `TURB_CLEAN_V` in the firmware. The default is 2.70V.
+
+### 4. Raspberry Pi 4 + Pi Camera V2
 
 ```
   1. Locate the CSI camera port on Pi4 (between HDMI and audio jack)
@@ -131,17 +175,18 @@ Wiring diagram:
   4. Press the plastic clip back down to lock the cable
 ```
 
-### 4. Full Wiring Summary
+### 5. Full Wiring Summary
 
 ```
 ┌──────────────────────────────────────────────────────────┐
 │                    ESP32-S3-N16R8                         │
 │                                                          │
-│  3V3  ──── DS18B20 RED + resistor leg 1                   │
-│  GND  ──── DS18B20 BLACK + pH module signal GND          │
-│  GPIO 4 ── DS18B20 YELLOW (data) + resistor leg 2       │
-│          (4.7kΩ resistor bridges 3V3 ↔ GPIO 4)           │
+│  3V3  ──── DS18B20 RED + 4.7kΩ resistor leg 1            │
+│  GND  ──── DS18B20 BLACK + pH signal GND                 │
+│           + turbidity GND + divider GND                   │
+│  GPIO 4 ── DS18B20 YELLOW (data) + 4.7kΩ resistor leg 2 │
 │  GPIO 1 ── pH module signal output (Vo)                  │
+│  GPIO 2 ── Turbidity voltage divider midpoint            │
 │                                                          │
 │  USB-C ─── 5V power supply                               │
 │  WiFi ──── connects to same network as Pi4               │
@@ -149,6 +194,7 @@ Wiring diagram:
 
 ┌──────────────────────────────────────────────────────────┐
 │  9V DC Adapter ──── pH module power input (2-pin)        │
+│  5V Supply ──────── Turbidity sensor RED (VCC)           │
 └──────────────────────────────────────────────────────────┘
 
 ┌──────────────────────────────────────────────────────────┐

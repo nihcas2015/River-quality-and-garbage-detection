@@ -36,8 +36,9 @@ def sensor_loop():
     while running:
         data = sensor.get_aggregated()
         if data["node_count"] > 0:
-            log.info("Sensors — temp=%.1f°C  pH=%.2f  nodes=%d",
-                     data["temperature"], data["ph"], data["node_count"])
+            log.info("Sensors — temp=%.1f°C  pH=%.2f  turb=%.0f NTU  nodes=%d",
+                     data["temperature"], data["ph"],
+                     data.get("turbidity", 0), data["node_count"])
         time.sleep(config.SENSOR_POLL)
 
 
@@ -82,16 +83,20 @@ def communication_loop():
                 anomalies = anomaly_det.update(
                     temperature=data.get("temperature", 0),
                     ph=data.get("ph", 7),
+                    turbidity=data.get("turbidity", 0),
                 )
             else:
                 anomalies = {"temperature": False, "ph": False,
+                             "turbidity": False,
                              "anomaly_detected": False, "anomaly_list": [],
                              "total_anomalies": anomaly_det.total_anomalies,
-                             "stats": {"temperature": None, "ph": None}}
+                             "stats": {"temperature": None, "ph": None,
+                                       "turbidity": None}}
             fc.send_data(data, latest_detection, anomalies)
             last_send = now
-            log.info("Data sent to Pi5  |  temp=%.1f  pH=%.2f  trash=%d  anomalies=%d",
+            log.info("Data sent to Pi5  |  temp=%.1f  pH=%.2f  turb=%.0f  trash=%d  anomalies=%d",
                      data.get("temperature", 0), data.get("ph", 0),
+                     data.get("turbidity", 0),
                      latest_detection.get("trash_count", 0),
                      len(anomalies.get("anomaly_list", [])))
 

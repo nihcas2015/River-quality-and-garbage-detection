@@ -5,6 +5,7 @@
  *   - ESP32-S3-N16R8 (16 MB Flash, 8 MB PSRAM)
  *   - DS18B20 waterproof temperature sensor  → GPIO 4
  *   - pH sensor module (9 V DC power, analog output) → GPIO 1 (ADC1_CH0)
+ *   - Turbidity sensor (TSD-10 + adapter board, analog output) → GPIO 2 (ADC1_CH1)
  *   - WiFi → connects to local network, publishes via MQTT
  *
  * Libraries (install via Arduino Library Manager):
@@ -41,8 +42,9 @@ const char* TOPIC_SENSOR = "river/sensor_data";
 const char* TOPIC_STATUS = "river/status";
 
 // ─── PINS (ESP32-S3) ───────────────────────────────────────
-#define DS18B20_PIN   4    // GPIO 4  — OneWire data
-#define PH_SENSOR_PIN 1    // GPIO 1  — ADC1_CH0 analog input
+#define DS18B20_PIN      4    // GPIO 4  — OneWire data
+#define PH_SENSOR_PIN    1    // GPIO 1  — ADC1_CH0 analog input
+#define TURB_SENSOR_PIN  2    // GPIO 2  — ADC1_CH1 analog input
 
 // ─── pH CALIBRATION ─────────────────────────────────────────
 // Calibrate with pH 4.0 and pH 7.0 buffer solutions.
@@ -50,6 +52,15 @@ const char* TOPIC_STATUS = "river/status";
 // Dip probe in pH 4.0 buffer → note the raw ADC voltage → PH4_VOLTAGE
 #define PH7_VOLTAGE  1.50   // voltage at pH 7.0  (adjust after calibration)
 #define PH4_VOLTAGE  2.03   // voltage at pH 4.0  (adjust after calibration)
+
+// ─── TURBIDITY CALIBRATION ──────────────────────────────────
+// TSD-10: outputs ~4.2 V in clean water, drops toward 0 V in turbid water.
+// Sensor powered at 5 V; its output is 0–4.5 V.  With ESP32-S3 ADC (0–3.3 V)
+// use a voltage divider (e.g. 1 kΩ + 1.5 kΩ) to scale into range.
+// TURB_CLEAN_V = voltage in clean water (after divider), TURB_MAX_NTU = max
+// NTU at 0 V.  Adjust after calibrating with known samples.
+#define TURB_CLEAN_V   2.70   // voltage in clean water (≈ 0 NTU)
+#define TURB_MAX_NTU   3000.0 // NTU when voltage ≈ 0
 
 // ─── GLOBALS ────────────────────────────────────────────────
 OneWire oneWire(DS18B20_PIN);
@@ -122,18 +133,43 @@ float readPH() {
   return ph;
 }
 
-void publishSensorData(float temperature, float ph) {
+float readTurbidity() {
+  // Average 20 ADC samples for stability
+  long total = 0;
+  for (int i = 0; i < 20; i++) {
+    total += analogRead(TURB_SENSOR_PIN);
+    delay(10);
+  }
+  float avgRaw = total / 20.0;
+  float voltage = avgRaw * (3.3 / 4095.0);
+
+  // Linear mapping: clean water (high voltage) → 0 NTU,
+  // turbid water (low voltage) → TURB_MAX_NTU
+  float ntu = 0.0;
+  if (voltage >= TURB_CLEAN_V) {
+    ntu = 0.0;
+  } else if (voltage <= 0.0) {
+    ntu = TURB_MAX_NTU;
+  } else {
+    ntu = (TURB_CLEAN_V - voltage) / TURB_CLEAN_V * TURB_MAX_NTU;
+  }
+  return ntu;
+}
+
+void publishSensorData(float temperature, float ph, float turbidity) {
   StaticJsonDocument<256> doc;
   doc["node_id"]     = NODE_ID;
   doc["temperature"] = round(temperature * 100.0) / 100.0;
   doc["ph"]          = round(ph * 100.0) / 100.0;
+  doc["turbidity"]   = round(turbidity * 100.0) / 100.0;
   doc["timestamp"]   = millis();
 
   char buf[256];
   serializeJson(doc, buf);
   mqtt.publish(TOPIC_SENSOR, buf);
 
-  Serial.printf("Published — Temp: %.2f °C  |  pH: %.2f\n", temperature, ph);
+  Serial.printf("Published — Temp: %.2f °C  |  pH: %.2f  |  Turb: %.1f NTU\n",
+                temperature, ph, turbidity);
 }
 
 // ─── SETUP & LOOP ───────────────────────────────────────────
@@ -162,9 +198,10 @@ void loop() {
 
     float temp = readTemperature();
     float ph   = readPH();
+    float turb = readTurbidity();
 
     if (temp != -999.0) {
-      publishSensorData(temp, ph);
+      publishSensorData(temp, ph, turb);
     }
   }
 }
