@@ -60,6 +60,7 @@ def get_river_summary():
     """Aggregate latest readings across all nodes."""
     temps, phs, trash_total = [], [], 0
     anomaly_counts = {"temperature": 0, "ph": 0}
+    sensor_stats = {}
 
     for v in latest_readings.values():
         sd = v.get("sensor_data", {})
@@ -73,6 +74,10 @@ def get_river_summary():
         for k in anomaly_counts:
             if v.get("anomalies", {}).get(k):
                 anomaly_counts[k] += 1
+        # Collect rolling sensor stats from the anomaly detector
+        node_stats = v.get("anomalies", {}).get("stats")
+        if node_stats:
+            sensor_stats = node_stats   # latest node's stats
 
     return {
         "avg_temperature": sum(temps) / len(temps) if temps else 0,
@@ -80,6 +85,7 @@ def get_river_summary():
         "total_trash_detected": trash_total,
         "anomalies": anomaly_counts,
         "node_count": len(latest_readings),
+        "sensor_stats": sensor_stats,
     }
 
 
@@ -111,16 +117,31 @@ def submit_data():
         if len(trash_events) > 500:
             trash_events[:] = trash_events[-500:]
 
-    # Generate alerts for anomalies
-    for key, flagged in d.get("anomalies", {}).items():
-        if flagged:
+    # Generate alerts from the time-series anomaly list
+    anomaly_list = d.get("anomalies", {}).get("anomaly_list", [])
+    if anomaly_list:
+        for a in anomaly_list:
             alerts.append({
-                "message": f"{key} anomaly from {node_id}",
-                "severity": "high",
-                "type": "anomaly",
+                "message": a.get("message", "Unknown anomaly"),
+                "severity": a.get("severity", "high"),
+                "type": a.get("type", "anomaly"),
                 "node_id": node_id,
+                "sensor": a.get("sensor", ""),
+                "value": a.get("value"),
                 "timestamp": now_iso(),
             })
+    else:
+        # Backward-compatible: simple boolean flags
+        for key, flagged in d.get("anomalies", {}).items():
+            if flagged is True:
+                alerts.append({
+                    "message": f"{key} anomaly from {node_id}",
+                    "severity": "high",
+                    "type": "threshold",
+                    "node_id": node_id,
+                    "sensor": key,
+                    "timestamp": now_iso(),
+                })
     if len(alerts) > 200:
         alerts[:] = alerts[-200:]
 

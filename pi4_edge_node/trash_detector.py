@@ -45,7 +45,7 @@ class TrashDetector:
 
     def detect(self):
         """Capture one frame and run YOLO inference. Returns dict."""
-        if self.camera is None:
+        if self.camera is None or self.model is None:
             return {"trash_count": 0, "detections": []}
 
         try:

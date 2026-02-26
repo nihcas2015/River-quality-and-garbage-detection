@@ -13,6 +13,7 @@ import threading
 import config
 from sensor_reader import SensorReader
 from trash_detector import TrashDetector
+from anomaly_detector import AnomalyDetector
 import federated_client as fc
 
 # ── Logging ──────────────────────────────────────────────────
@@ -25,6 +26,7 @@ log = logging.getLogger("edge")
 # ── Shared state ─────────────────────────────────────────────
 sensor = SensorReader()
 detector = TrashDetector()
+anomaly_det = AnomalyDetector()
 latest_detection = {"trash_count": 0, "detections": []}
 running = True
 
@@ -75,12 +77,23 @@ def communication_loop():
         # Send data
         if now - last_send >= config.SEND_INTERVAL:
             data = sensor.get_aggregated()
-            anomalies = sensor.detect_anomalies(data)
+            # Run time-series anomaly detection (only with real sensor data)
+            if data.get("node_count", 0) > 0:
+                anomalies = anomaly_det.update(
+                    temperature=data.get("temperature", 0),
+                    ph=data.get("ph", 7),
+                )
+            else:
+                anomalies = {"temperature": False, "ph": False,
+                             "anomaly_detected": False, "anomaly_list": [],
+                             "total_anomalies": anomaly_det.total_anomalies,
+                             "stats": {"temperature": None, "ph": None}}
             fc.send_data(data, latest_detection, anomalies)
             last_send = now
-            log.info("Data sent to Pi5  |  temp=%.1f  pH=%.2f  trash=%d",
+            log.info("Data sent to Pi5  |  temp=%.1f  pH=%.2f  trash=%d  anomalies=%d",
                      data.get("temperature", 0), data.get("ph", 0),
-                     latest_detection.get("trash_count", 0))
+                     latest_detection.get("trash_count", 0),
+                     len(anomalies.get("anomaly_list", [])))
 
         time.sleep(1)
 

@@ -28,13 +28,24 @@ function Alerts({ alerts }) {
         return <AlertTriangle size={20} className="icon-critical" />;
       case 'high':
         return <AlertCircle size={20} className="icon-high" />;
+      case 'medium':
+        return <Info size={20} className="icon-medium" />;
       default:
         return <Info size={20} className="icon-info" />;
     }
   };
 
   const getTypeLabel = (type) => {
-    return type.charAt(0).toUpperCase() + type.slice(1);
+    const labels = {
+      threshold: 'Threshold',
+      spike: 'Sudden Change',
+      zscore: 'Statistical Outlier',
+      drift: 'Trend Drift',
+      anomaly: 'Anomaly',
+      trash: 'Trash Detection',
+      system: 'System',
+    };
+    return labels[type] || (type ? type.charAt(0).toUpperCase() + type.slice(1) : 'Unknown');
   };
 
   return (
@@ -67,7 +78,10 @@ function Alerts({ alerts }) {
             onChange={(e) => setTypeFilter(e.target.value)}
           >
             <option value="all">All Types</option>
-            <option value="anomaly">Anomaly</option>
+            <option value="threshold">Threshold</option>
+            <option value="spike">Sudden Change</option>
+            <option value="zscore">Statistical Outlier</option>
+            <option value="drift">Trend Drift</option>
             <option value="trash">Trash Detection</option>
             <option value="system">System</option>
           </select>
@@ -98,11 +112,21 @@ function Alerts({ alerts }) {
                   <span className="detail-item">
                     <strong>Node:</strong> {alert.node_id || 'System'}
                   </span>
+                  {alert.sensor && (
+                    <span className="detail-item">
+                      <strong>Sensor:</strong> {alert.sensor}
+                    </span>
+                  )}
+                  {alert.value !== undefined && alert.value !== null && (
+                    <span className="detail-item">
+                      <strong>Value:</strong> {alert.value}
+                    </span>
+                  )}
                   <span className="detail-item">
                     <strong>Time:</strong> {new Date(alert.timestamp).toLocaleString()}
                   </span>
-                  <span className={`severity-badge ${alert.severity}`}>
-                    {alert.severity.toUpperCase()}
+                  <span className={`severity-badge ${alert.severity || 'low'}`}>
+                    {(alert.severity || 'unknown').toUpperCase()}
                   </span>
                 </div>
               </div>

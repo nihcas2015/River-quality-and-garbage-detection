@@ -119,6 +119,63 @@
   color: var(--danger);
 }
 
+/* ── Sensor Stats Bar ── */
+.sensor-stats-bar {
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+  box-shadow: var(--shadow);
+}
+
+.sensor-stats-bar h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0 0 14px 0;
+}
+
+.stats-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+.stat-block {
+  background: var(--light);
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+
+.stat-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-primary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 10px;
+}
+
+.stat-block p {
+  margin: 4px 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.stat-block strong {
+  color: var(--text-primary);
+}
+
+.stat-samples {
+  font-size: 11px;
+  color: var(--text-secondary);
+  opacity: 0.7;
+  margin-top: 6px;
+}
+
 /* ── Charts ── */
 .charts-row {
   display: grid;
@@ -314,6 +371,9 @@
   }
   .status-overview {
     grid-template-columns: repeat(2, 1fr);
+  }
+  .stats-row {
+    grid-template-columns: 1fr;
   }
   .dashboard-header {
     flex-direction: column;

@@ -25,8 +25,15 @@ SEND_INTERVAL = 10
 HEARTBEAT_INTERVAL = 15
 FEDERATION_INTERVAL = 120   # seconds between federated learning rounds
 
-# Anomaly thresholds
+# Anomaly thresholds (absolute bounds)
 TEMP_MIN = 4.0
 TEMP_MAX = 35.0
 PH_MIN = 6.0
 PH_MAX = 9.0
+
+# Time-series anomaly detection
+ANOMALY_WINDOW = 30           # sliding window size (number of readings)
+ANOMALY_Z_THRESHOLD = 2.5     # Z-score to flag a statistical outlier
+ANOMALY_TEMP_SPIKE = 5.0      # °C change in one reading = spike
+ANOMALY_PH_SPIKE = 1.0        # pH change in one reading  = spike
+ANOMALY_EWMA_ALPHA = 0.3      # EWMA smoothing factor (0–1, higher = more reactive)

@@ -120,6 +120,7 @@ function Dashboard({ riverData, federationStatus, latestReadings, alerts }) {
   const anomalyCounts = riverData?.anomalies || {};
   const totalAnomalies = Object.values(anomalyCounts).reduce((a, b) => a + b, 0);
   const totalTrash = riverData?.total_trash_detected || 0;
+  const sensorStats = riverData?.sensor_stats || {};
 
   const anomalyPieData = [
     { name: 'Temperature', value: anomalyCounts.temperature || 0 },
@@ -200,6 +201,35 @@ function Dashboard({ riverData, federationStatus, latestReadings, alerts }) {
           <span className="status-value alert-count">{alerts.length}</span>
         </div>
       </div>
+
+      {/* ── Sensor Statistics (from Time-Series Anomaly Model) ── */}
+      {(sensorStats.temperature || sensorStats.ph) && (
+        <div className="sensor-stats-bar">
+          <h3><Activity size={16} /> Time-Series Sensor Analysis</h3>
+          <div className="stats-row">
+            {sensorStats.temperature && (
+              <div className="stat-block">
+                <p className="stat-title">Temperature</p>
+                <p>EWMA: <strong>{sensorStats.temperature.ewma ?? '--'}°C</strong></p>
+                <p>Mean: {sensorStats.temperature.mean ?? '--'}°C</p>
+                <p>Std: ±{sensorStats.temperature.std ?? '--'}</p>
+                <p>Range: [{sensorStats.temperature.min ?? '--'}–{sensorStats.temperature.max ?? '--'}]</p>
+                <p className="stat-samples">{sensorStats.temperature.samples} samples</p>
+              </div>
+            )}
+            {sensorStats.ph && (
+              <div className="stat-block">
+                <p className="stat-title">pH Level</p>
+                <p>EWMA: <strong>{sensorStats.ph.ewma ?? '--'}</strong></p>
+                <p>Mean: {sensorStats.ph.mean ?? '--'}</p>
+                <p>Std: ±{sensorStats.ph.std ?? '--'}</p>
+                <p>Range: [{sensorStats.ph.min ?? '--'}–{sensorStats.ph.max ?? '--'}]</p>
+                <p className="stat-samples">{sensorStats.ph.samples} samples</p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* ── Charts Row 1: Sensor Trends + Water Quality Gauge ── */}
       <div className="charts-row">
@@ -333,7 +363,7 @@ function Dashboard({ riverData, federationStatus, latestReadings, alerts }) {
         </div>
         <div className="alerts-list">
           {alerts.length > 0 ? (
-            alerts.slice(0, 5).map((alert, index) => (
+            alerts.slice(-5).reverse().map((alert, index) => (
               <div key={index} className={`alert-item ${alert.severity}`}>
                 <AlertTriangle size={16} />
                 <div className="alert-content">
