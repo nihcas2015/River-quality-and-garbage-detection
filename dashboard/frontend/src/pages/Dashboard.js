@@ -137,12 +137,24 @@ function Dashboard({ riverData, federationStatus, latestReadings, alerts }) {
   const totalAnomalies = Object.values(anomalyCounts).reduce((a, b) => a + b, 0);
   const totalTrash = riverData?.total_trash_detected || 0;
   const sensorStats = riverData?.sensor_stats || {};
+  const trashClassCounts = riverData?.trash_class_counts || {};
+  const trashClassTotals = riverData?.trash_class_totals || {};
+
+  const CLASS_COLORS_MAP = {
+    Plastic: '#ef4444', Paper: '#f97316', Metal: '#6366f1',
+    Glass: '#3b82f6', Organic: '#22c55e', Textile: '#8b5cf6',
+  };
+  const FB_COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#8b5cf6'];
+
+  // Combine current + historical class data for pie
+  const classPieData = Object.entries(
+    Object.keys(trashClassTotals).length > 0 ? trashClassTotals : trashClassCounts
+  ).map(([name, value]) => ({ name, value })).filter(d => d.value > 0);
 
   const anomalyPieData = [
     { name: 'Temperature', value: anomalyCounts.temperature || 0 },
     { name: 'pH Level', value: anomalyCounts.ph || 0 },
     { name: 'Turbidity', value: anomalyCounts.turbidity || 0 },
-    { name: 'Trash', value: totalTrash },
   ].filter(item => item.value > 0);
 
   const wqiGaugeData = [{ name: 'WQI', value: wqi, fill: wqiInfo.color }];
@@ -355,6 +367,57 @@ function Dashboard({ riverData, federationStatus, latestReadings, alerts }) {
           )}
         </ChartContainer>
       </div>
+
+      {/* ── Trash Class Breakdown ── */}
+      {classPieData.length > 0 && (
+        <div className="charts-row">
+          <ChartContainer title="Trash by YOLO Class">
+            <ResponsiveContainer width="100%" height={280}>
+              <PieChart>
+                <Pie
+                  data={classPieData}
+                  cx="50%"
+                  cy="50%"
+                  labelLine
+                  label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                  outerRadius={90}
+                  innerRadius={40}
+                  fill="#8884d8"
+                  dataKey="value"
+                  paddingAngle={3}
+                >
+                  {classPieData.map((entry, index) => (
+                    <Cell key={`cls-${index}`}
+                          fill={CLASS_COLORS_MAP[entry.name] || FB_COLORS[index % FB_COLORS.length]} />
+                  ))}
+                </Pie>
+                <Tooltip />
+                <Legend />
+              </PieChart>
+            </ResponsiveContainer>
+          </ChartContainer>
+
+          <ChartContainer title="Class Item Counts">
+            <ResponsiveContainer width="100%" height={280}>
+              <BarChart
+                data={classPieData}
+                layout="vertical"
+              >
+                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                <XAxis type="number" tick={{ fontSize: 11 }} />
+                <YAxis dataKey="name" type="category" width={70} tick={{ fontSize: 11 }} />
+                <Tooltip />
+                <Bar dataKey="value" name="Items" radius={[0, 4, 4, 0]}>
+                  {classPieData.map((entry, index) => (
+                    <Cell key={`cb-${index}`}
+                          fill={CLASS_COLORS_MAP[entry.name] || FB_COLORS[index % FB_COLORS.length]} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </ChartContainer>
+        </div>
+      )}
 
       {/* ── Charts Row 2: Node Comparison + Trash Timeline ── */}
       <div className="charts-row">

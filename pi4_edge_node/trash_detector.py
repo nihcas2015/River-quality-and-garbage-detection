@@ -71,17 +71,21 @@ class TrashDetector:
         results = self.model(frame, conf=config.CONFIDENCE, verbose=False)
 
         detections = []
+        class_counts = {}   # {class_name: count}
         for r in results:
             for box in r.boxes:
+                cls_name = r.names[int(box.cls[0])]
                 detections.append({
-                    "class": r.names[int(box.cls[0])],
+                    "class": cls_name,
                     "confidence": round(float(box.conf[0]), 3),
                     "bbox": box.xyxy[0].tolist(),
                 })
+                class_counts[cls_name] = class_counts.get(cls_name, 0) + 1
 
         return {
             "trash_count": len(detections),
             "detections": detections,
+            "class_counts": class_counts,
         }
 
     # ── Federated Learning helpers ────────────────────────────

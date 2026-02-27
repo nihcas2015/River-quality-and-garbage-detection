@@ -47,7 +47,9 @@ def log_response(response):
 nodes = {}            # {node_id: {node_type, registered_at, last_heartbeat, rounds}}
 latest_readings = {}  # {node_id: {sensor_data, detection_result, anomalies, ts}}
 alerts = []           # [{message, severity, type, node_id, timestamp}]
-trash_events = []     # [{node_id, count, timestamp}]
+trash_events = []     # [{node_id, count, class_counts, timestamp}]
+trash_class_totals = {}  # {class_name: total_count} aggregated across all events
+system_trace = []     # [{event, source, detail, timestamp}] for diagnostics
 fed_server = FederatedServer(min_nodes=1, round_timeout=300)
 
 
@@ -56,11 +58,21 @@ def now_iso():
     return datetime.utcnow().isoformat() + "Z"
 
 
+def trace(event, source="server", detail=""):
+    """Append an entry to the system trace log."""
+    entry = {"event": event, "source": source, "detail": str(detail)[:300],
+             "timestamp": now_iso()}
+    system_trace.append(entry)
+    if len(system_trace) > 500:
+        system_trace[:] = system_trace[-500:]
+
+
 def get_river_summary():
     """Aggregate latest readings across all nodes."""
     temps, phs, turbs, trash_total = [], [], [], 0
     anomaly_counts = {"temperature": 0, "ph": 0, "turbidity": 0}
     sensor_stats = {}
+    class_counts_agg = {}  # aggregate class counts across all nodes
 
     for v in latest_readings.values():
         sd = v.get("sensor_data", {})
@@ -74,6 +86,10 @@ def get_river_summary():
         if tb is not None:
             turbs.append(tb)
         trash_total += v.get("detection_result", {}).get("trash_count", 0)
+        # Aggregate per-class detections
+        cc = v.get("detection_result", {}).get("class_counts", {})
+        for cls_name, cnt in cc.items():
+            class_counts_agg[cls_name] = class_counts_agg.get(cls_name, 0) + cnt
         for k in anomaly_counts:
             if v.get("anomalies", {}).get(k):
                 anomaly_counts[k] += 1
@@ -87,6 +103,8 @@ def get_river_summary():
         "avg_ph": sum(phs) / len(phs) if phs else 7,
         "avg_turbidity": sum(turbs) / len(turbs) if turbs else 0,
         "total_trash_detected": trash_total,
+        "trash_class_counts": class_counts_agg,
+        "trash_class_totals": trash_class_totals,
         "anomalies": anomaly_counts,
         "node_count": len(latest_readings),
         "sensor_stats": sensor_stats,
@@ -114,13 +132,25 @@ def submit_data():
         "anomalies": d.get("anomalies", {}),
         "timestamp": now_iso(),
     }
+    trace("data_received", source=node_id,
+          detail=f"temp={d.get('sensor_data', {}).get('temperature', 0):.1f} "
+                 f"trash={d.get('detection_result', {}).get('trash_count', 0)}")
 
-    # Store trash events
+    # Store trash events with per-class breakdown
     tc = d.get("detection_result", {}).get("trash_count", 0)
+    cc = d.get("detection_result", {}).get("class_counts", {})
     if tc > 0:
-        trash_events.append({"node_id": node_id, "count": tc, "timestamp": now_iso()})
+        trash_events.append({
+            "node_id": node_id, "count": tc,
+            "class_counts": cc, "timestamp": now_iso(),
+        })
         if len(trash_events) > 500:
             trash_events[:] = trash_events[-500:]
+        # Update running class totals
+        for cls_name, cnt in cc.items():
+            trash_class_totals[cls_name] = trash_class_totals.get(cls_name, 0) + cnt
+        trace("trash_detected", source=node_id,
+              detail=f"{tc} items — classes: {cc}")
 
     # Generate alerts from the time-series anomaly list
     anomaly_list = d.get("anomalies", {}).get("anomaly_list", [])
@@ -166,6 +196,7 @@ def register_node():
         "rounds_participated": 0,
     }
     log.info("Node registered: %s (type: %s)", nid, d.get("node_type"))
+    trace("node_registered", source=nid, detail=d.get("node_type", "unknown"))
     return jsonify({"status": "registered", "node_id": nid})
 
 
@@ -195,6 +226,8 @@ def submit_update():
         nodes[nid]["rounds_participated"] = fed_server.current_round
     log.info("Federation update from %s (%d values) — round %d→%d",
              nid, len(weights), prev_round, fed_server.current_round)
+    trace("federation_update", source=nid,
+          detail=f"{len(weights)} weights — round {prev_round}→{fed_server.current_round}")
     return jsonify({"status": "ok", "round": fed_server.current_round})
 
 
@@ -238,12 +271,59 @@ def trash_history():
     return jsonify({
         "trash_events": trash_events[-limit:],
         "total_count": sum(e["count"] for e in trash_events),
+        "class_totals": trash_class_totals,
     })
 
 
 @app.route("/api/health", methods=["GET"])
 def health():
     return jsonify({"status": "healthy", "uptime": time.process_time()})
+
+
+@app.route("/api/system/trace", methods=["GET"])
+def get_trace():
+    """Return the system event trace log for diagnostics."""
+    limit = request.args.get("limit", 100, type=int)
+    return jsonify({
+        "trace": system_trace[-limit:],
+        "total_events": len(system_trace),
+    })
+
+
+@app.route("/api/system/diagnostics", methods=["GET"])
+def diagnostics():
+    """Full system diagnostics — nodes, federation, data pipeline health."""
+    active = 0
+    stale = 0
+    for n in nodes.values():
+        elapsed = (datetime.utcnow() - datetime.fromisoformat(
+            n["last_heartbeat"].rstrip("Z"))).total_seconds()
+        if elapsed < 60:
+            active += 1
+        else:
+            stale += 1
+
+    return jsonify({
+        "server": {
+            "uptime_s": round(time.process_time(), 2),
+            "nodes_registered": len(nodes),
+            "nodes_active": active,
+            "nodes_stale": stale,
+        },
+        "data_pipeline": {
+            "total_readings": len(latest_readings),
+            "total_trash_events": len(trash_events),
+            "trash_class_totals": trash_class_totals,
+            "total_alerts": len(alerts),
+        },
+        "federation": {
+            "current_round": fed_server.current_round,
+            "pending_updates": len(fed_server.updates),
+            "has_global_model": fed_server.global_weights is not None,
+        },
+        "trace_log_size": len(system_trace),
+        "timestamp": now_iso(),
+    })
 
 
 # Catch-all for unknown /api/* paths — returns 404 instead of index.html
@@ -282,14 +362,19 @@ def broadcast_loop():
             },
             "latest_readings": latest_readings,
             "alerts": alerts[-20:],
+            "trash_class_totals": trash_class_totals,
         }
         socketio.emit("river_update", payload)
 
 
 # ── Start ────────────────────────────────────────────────────
+# ── Configuration ────────────────────────────────────────────
+SERVER_HOST = "0.0.0.0"   # listen on all interfaces
+SERVER_PORT = 5000         # ← must match PI5_PORT in pi4_edge_node/config.py
+
 if __name__ == "__main__":
     log.info("=== Pi5 Central Server starting ===")
     log.info("BUILD_DIR = %s (exists: %s)", BUILD_DIR, os.path.isdir(BUILD_DIR))
-    log.info("Listening on http://0.0.0.0:5000")
+    log.info("Listening on http://%s:%d", SERVER_HOST, SERVER_PORT)
     socketio.start_background_task(broadcast_loop)
-    socketio.run(app, host="0.0.0.0", port=5000, debug=False)
+    socketio.run(app, host=SERVER_HOST, port=SERVER_PORT, debug=False)

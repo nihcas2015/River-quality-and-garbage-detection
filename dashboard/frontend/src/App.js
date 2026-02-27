@@ -20,6 +20,7 @@ function App() {
   const [federationStatus, setFederationStatus] = useState(null);
   const [latestReadings, setLatestReadings] = useState({});
   const [alerts, setAlerts] = useState([]);
+  const [trashClassTotals, setTrashClassTotals] = useState({});
   const [isConnected, setIsConnected] = useState(false);
   const [loading, setLoading] = useState(true);
 
@@ -49,6 +50,7 @@ function App() {
       if (data.federation_status) setFederationStatus(data.federation_status);
       if (data.latest_readings) setLatestReadings(data.latest_readings);
       if (data.alerts) setAlerts(data.alerts);
+      if (data.trash_class_totals) setTrashClassTotals(data.trash_class_totals);
     });
 
     return () => {

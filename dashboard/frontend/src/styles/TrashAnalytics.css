@@ -191,6 +191,39 @@
   color: var(--text-secondary);
 }
 
+.no-data-msg {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 200px;
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+
+/* ── Class tag pills (in detection table) ── */
+.class-cell {
+  min-width: 180px;
+}
+
+.class-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.class-tag {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.no-class {
+  color: var(--text-secondary);
+}
+
 @media (max-width: 1024px) {
   .charts-row {
     grid-template-columns: 1fr;
