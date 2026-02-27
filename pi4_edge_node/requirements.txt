@@ -3,6 +3,5 @@ ultralytics>=8.0.0
 numpy>=1.24.0
 requests>=2.31.0
 Pillow>=10.0.0
-# picamera2 is NOT listed here — it comes pre-installed as a system
-# package on Raspberry Pi OS Bookworm+. The venv must be created with
-# --system-site-packages so Python can find it.
+# Camera capture uses the libcamera-still CLI tool (pre-installed on
+# Raspberry Pi OS Bookworm). No picamera2 Python dependency is needed.

@@ -54,13 +54,11 @@ const char* TOPIC_STATUS = "river/status";
 #define PH4_VOLTAGE  2.03   // voltage at pH 4.0  (adjust after calibration)
 
 // ─── TURBIDITY CALIBRATION ──────────────────────────────────
-// TSD-10: outputs ~4.2 V in clean water, drops toward 0 V in turbid water.
-// Sensor powered at 5 V; its output is 0–4.5 V.  With ESP32-S3 ADC (0–3.3 V)
-// use a voltage divider (e.g. 1 kΩ + 1.5 kΩ) to scale into range.
-// TURB_CLEAN_V = voltage in clean water (after divider), TURB_MAX_NTU = max
-// NTU at 0 V.  Adjust after calibrating with known samples.
-#define TURB_CLEAN_V   2.70   // voltage in clean water (≈ 0 NTU)
-#define TURB_MAX_NTU   3000.0 // NTU when voltage ≈ 0
+// TSD-10 (5 V sensor, 0–4.5 V output).  Clean water ≈ 4.2 V, turbid → 0 V.
+// Standard polynomial calibration curve (from TSD-10 datasheet):
+//   NTU = –1120.4·V² + 5742.3·V – 4352.9   (V = raw sensor voltage)
+// Voltage divider (1 kΩ + 1.5 kΩ) scales output into ESP32-S3 ADC range.
+#define TURB_DIVIDER   0.6    // R2/(R1+R2) = 1.5/(1.0+1.5)
 
 // ─── GLOBALS ────────────────────────────────────────────────
 OneWire oneWire(DS18B20_PIN);
@@ -141,18 +139,20 @@ float readTurbidity() {
     delay(10);
   }
   float avgRaw = total / 20.0;
-  float voltage = avgRaw * (3.3 / 4095.0);
+  float adcVoltage = avgRaw * (3.3 / 4095.0);
 
-  // Linear mapping: clean water (high voltage) → 0 NTU,
-  // turbid water (low voltage) → TURB_MAX_NTU
-  float ntu = 0.0;
-  if (voltage >= TURB_CLEAN_V) {
-    ntu = 0.0;
-  } else if (voltage <= 0.0) {
-    ntu = TURB_MAX_NTU;
-  } else {
-    ntu = (TURB_CLEAN_V - voltage) / TURB_CLEAN_V * TURB_MAX_NTU;
-  }
+  // Convert ADC voltage back to raw sensor voltage (undo divider)
+  float sensorV = adcVoltage / TURB_DIVIDER;
+  if (sensorV > 4.5) sensorV = 4.5;   // clamp to sensor max
+
+  // TSD-10 polynomial calibration: NTU = –1120.4·V² + 5742.3·V – 4352.9
+  float ntu = -1120.4 * sensorV * sensorV + 5742.3 * sensorV - 4352.9;
+
+  if (ntu < 0.0) ntu = 0.0;            // clean water
+  if (ntu > 3000.0) ntu = 3000.0;      // sensor ceiling
+
+  Serial.printf("  [Turb debug] ADC=%.3fV  Sensor=%.3fV  NTU=%.1f\n",
+                adcVoltage, sensorV, ntu);
   return ntu;
 }
 
