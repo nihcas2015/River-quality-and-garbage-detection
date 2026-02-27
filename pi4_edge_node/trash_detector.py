@@ -1,7 +1,11 @@
 """YOLOv8 trash detector — runs inference on Pi Camera V2 frames."""
 
 import logging
+import os
+import subprocess
+import tempfile
 import numpy as np
+from PIL import Image
 from ultralytics import YOLO
 import config
 
@@ -13,7 +17,8 @@ class TrashDetector:
 
     def __init__(self):
         self.model = None
-        self.camera = None
+        self.camera = False       # True when camera test passes
+        self._tmp = os.path.join(tempfile.gettempdir(), "river_frame.jpg")
 
     def load_model(self):
         """Load the YOLOv8 model file."""
@@ -26,17 +31,19 @@ class TrashDetector:
             return False
 
     def open_camera(self):
-        """Open Pi Camera V2 using Picamera2 (required on Bookworm+)."""
+        """Test Pi Camera V2 via libcamera-still (CSI, Bookworm compatible)."""
         try:
-            from picamera2 import Picamera2
-            self.camera = Picamera2()
-            cam_config = self.camera.create_still_configuration(
-                main={"size": (config.FRAME_WIDTH, config.FRAME_HEIGHT),
-                      "format": "RGB888"}
+            result = subprocess.run(
+                ["libcamera-still", "-n", "-t", "1",
+                 "--width", str(config.FRAME_WIDTH),
+                 "--height", str(config.FRAME_HEIGHT),
+                 "-o", self._tmp],
+                capture_output=True, timeout=15,
             )
-            self.camera.configure(cam_config)
-            self.camera.start()
-            log.info("Pi Camera V2 opened via Picamera2 (%dx%d)",
+            if result.returncode != 0:
+                raise RuntimeError(result.stderr.decode().strip())
+            self.camera = True
+            log.info("Pi Camera V2 OK via libcamera-still (%dx%d)",
                      config.FRAME_WIDTH, config.FRAME_HEIGHT)
             return True
         except Exception as e:
@@ -44,12 +51,19 @@ class TrashDetector:
             return False
 
     def detect(self):
-        """Capture one frame and run YOLO inference. Returns dict."""
-        if self.camera is None or self.model is None:
+        """Capture one frame via libcamera-still and run YOLO inference."""
+        if not self.camera or self.model is None:
             return {"trash_count": 0, "detections": []}
 
         try:
-            frame = self.camera.capture_array()
+            subprocess.run(
+                ["libcamera-still", "-n", "-t", "1",
+                 "--width", str(config.FRAME_WIDTH),
+                 "--height", str(config.FRAME_HEIGHT),
+                 "-o", self._tmp],
+                capture_output=True, timeout=15,
+            )
+            frame = np.array(Image.open(self._tmp).convert("RGB"))
         except Exception as e:
             log.warning("Frame capture failed: %s", e)
             return {"trash_count": 0, "detections": []}
@@ -108,9 +122,9 @@ class TrashDetector:
             return False
 
     def release(self):
-        if self.camera:
-            try:
-                self.camera.stop()
-            except Exception:
-                pass
-            log.info("Camera released")
+        self.camera = False
+        try:
+            os.remove(self._tmp)
+        except OSError:
+            pass
+        log.info("Camera released")
