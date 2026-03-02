@@ -61,9 +61,13 @@ const char* TOPIC_STATUS = "river/status";
 #define PH4_VOLTAGE  2.03   // voltage at pH 4.0  (adjust after calibration)
 
 // ─── TURBIDITY CALIBRATION ──────────────────────────────────
-// TSD-10 (5 V sensor, 0–4.5 V output).  Clean water ≈ 4.2 V, turbid → 0 V.
-// Voltage divider (1 kΩ + 1.5 kΩ) scales output into ESP32-S3 ADC range.
-#define TURB_DIVIDER       0.6     // R2/(R1+R2) = 1.5/(1.0+1.5)
+// Measured calibration points (ADC voltage at ESP32 pin):
+//   Clean water : 3.30 V  →  0 NTU
+//   Air (dry)   : 3.15 V
+// Sensor connected directly to ADC (no voltage divider needed).
+// As water gets more turbid, voltage drops → NTU rises.
+#define TURB_CLEAN_V       3.30    // ADC voltage in clean water (0 NTU)
+#define TURB_DIVIDER       1.0     // 1.0 = direct connection, no divider
 #define TURB_SAMPLES       64      // oversampling count (power of 2)
 #define TURB_EMA_ALPHA     0.3     // exponential moving average weight (0–1)
 #define TURB_NOISE_FLOOR   3       // raw ADC counts below this = noise
@@ -148,27 +152,28 @@ void sortArray(int arr[], int n) {
       if (arr[j] < arr[i]) { int t = arr[i]; arr[i] = arr[j]; arr[j] = t; }
 }
 
-// ── Multi-segment calibration: sensor voltage → NTU ──
-// Segment 1 (V ≥ 2.5): clean water region   → low NTU
-// Segment 2 (V 1.0–2.5): moderate turbidity → polynomial fit
-// Segment 3 (V < 1.0): high turbidity       → linear extrapolation
-float voltageToNTU(float sensorV) {
+// ── Turbidity calibration: ADC voltage → NTU ──
+// Based on actual measurements:
+//   3.30 V = clean water  →    0 NTU
+//   3.15 V = air / dry    →   ~0 NTU (baseline reference)
+//   2.50 V               →  ~500 NTU  (moderately turbid)
+//   1.00 V               → ~2000 NTU  (very turbid)
+//   0.00 V               → ~3000 NTU  (opaque)
+// Uses piecewise linear interpolation from TURB_CLEAN_V downward.
+float voltageToNTU(float v) {
   float ntu;
-  if (sensorV >= 2.5) {
-    // Clean water: gentle curve, 4.2 V → 0 NTU, 2.5 V → ~300 NTU
-    ntu = -1120.4 * sensorV * sensorV + 5742.3 * sensorV - 4352.9;
-    if (ntu < 0.0) ntu = 0.0;
-  } else if (sensorV >= 1.0) {
-    // Mid range: standard TSD-10 polynomial
-    ntu = -1120.4 * sensorV * sensorV + 5742.3 * sensorV - 4352.9;
+  if (v >= TURB_CLEAN_V) {
+    // At or above clean-water voltage → 0 NTU
+    ntu = 0.0;
+  } else if (v >= 2.5) {
+    // 3.30 V → 0 NTU,  2.50 V → 500 NTU  (light turbidity)
+    ntu = (TURB_CLEAN_V - v) / (TURB_CLEAN_V - 2.5) * 500.0;
+  } else if (v >= 1.0) {
+    // 2.50 V → 500 NTU,  1.00 V → 2000 NTU  (moderate→high)
+    ntu = 500.0 + (2.5 - v) / (2.5 - 1.0) * 1500.0;
   } else {
-    // Low voltage / high turbidity: linear extrapolation from 1.0 V
-    // At V=1.0:  NTU = –1120.4 + 5742.3 – 4352.9 = 269.0
-    // Slope at V=1.0: dNTU/dV = –2240.8·V + 5742.3 = 3501.5
-    // As V decreases, NTU increases (more turbid)
-    float ntuAt1  = 269.0;
-    float slopeAt1 = 3501.5;
-    ntu = ntuAt1 + slopeAt1 * (1.0 - sensorV);
+    // 1.00 V → 2000 NTU,  0.00 V → 3000 NTU  (very high)
+    ntu = 2000.0 + (1.0 - v) / 1.0 * 1000.0;
   }
   // Clamp
   if (ntu < 0.0)    ntu = 0.0;
