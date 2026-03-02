@@ -61,12 +61,13 @@ const char* TOPIC_STATUS = "river/status";
 #define PH4_VOLTAGE  2.03   // voltage at pH 4.0  (adjust after calibration)
 
 // ─── TURBIDITY CALIBRATION ──────────────────────────────────
-// Measured calibration points (ADC voltage at ESP32 pin):
-//   Clean water : 3.30 V  →  0 NTU
-//   Air (dry)   : 3.15 V
-// Sensor connected directly to ADC (no voltage divider needed).
-// As water gets more turbid, voltage drops → NTU rises.
-#define TURB_CLEAN_V       3.30    // ADC voltage in clean water (0 NTU)
+// Measured calibration points (raw ADC voltage at ESP32 pin):
+//   Air (dry)   : 0.600 V  →  sensor not submerged
+//   Clean water : 0.915 V  →  0 NTU
+// Voltage rises when sensor enters water; as turbidity increases,
+// voltage drops below TURB_CLEAN_V → NTU rises.
+#define TURB_CLEAN_V       0.915   // ADC voltage in clean water (0 NTU)
+#define TURB_AIR_V         0.600   // ADC voltage in air (dry, baseline)
 #define TURB_DIVIDER       1.0     // 1.0 = direct connection, no divider
 #define TURB_SAMPLES       64      // oversampling count (power of 2)
 #define TURB_EMA_ALPHA     0.3     // exponential moving average weight (0–1)
@@ -154,26 +155,33 @@ void sortArray(int arr[], int n) {
 
 // ── Turbidity calibration: ADC voltage → NTU ──
 // Based on actual measurements:
-//   3.30 V = clean water  →    0 NTU
-//   3.15 V = air / dry    →   ~0 NTU (baseline reference)
-//   2.50 V               →  ~500 NTU  (moderately turbid)
-//   1.00 V               → ~2000 NTU  (very turbid)
-//   0.00 V               → ~3000 NTU  (opaque)
+//   0.915 V = clean water   →    0 NTU
+//   0.600 V = air / dry     →   not submerged (below water baseline)
+// When submerged, voltage starts at ~0.915 V (clean water).
+// As turbidity increases, voltage drops below TURB_CLEAN_V:
+//   0.915 V               →    0 NTU  (clean)
+//   0.700 V               →  500 NTU  (moderately turbid)
+//   0.400 V               → 2000 NTU  (very turbid)
+//   0.000 V               → 3000 NTU  (opaque)
 // Uses piecewise linear interpolation from TURB_CLEAN_V downward.
 float voltageToNTU(float v) {
   float ntu;
-  if (v >= TURB_CLEAN_V) {
+
+  // If sensor is in air (below air baseline), report 0
+  if (v <= TURB_AIR_V) {
+    ntu = 0.0;
+  } else if (v >= TURB_CLEAN_V) {
     // At or above clean-water voltage → 0 NTU
     ntu = 0.0;
-  } else if (v >= 2.5) {
-    // 3.30 V → 0 NTU,  2.50 V → 500 NTU  (light turbidity)
-    ntu = (TURB_CLEAN_V - v) / (TURB_CLEAN_V - 2.5) * 500.0;
-  } else if (v >= 1.0) {
-    // 2.50 V → 500 NTU,  1.00 V → 2000 NTU  (moderate→high)
-    ntu = 500.0 + (2.5 - v) / (2.5 - 1.0) * 1500.0;
+  } else if (v >= 0.70) {
+    // 0.915 V → 0 NTU,  0.700 V → 500 NTU  (light turbidity)
+    ntu = (TURB_CLEAN_V - v) / (TURB_CLEAN_V - 0.70) * 500.0;
+  } else if (v >= 0.40) {
+    // 0.700 V → 500 NTU,  0.400 V → 2000 NTU  (moderate→high)
+    ntu = 500.0 + (0.70 - v) / (0.70 - 0.40) * 1500.0;
   } else {
-    // 1.00 V → 2000 NTU,  0.00 V → 3000 NTU  (very high)
-    ntu = 2000.0 + (1.0 - v) / 1.0 * 1000.0;
+    // 0.400 V → 2000 NTU,  0.000 V → 3000 NTU  (very high)
+    ntu = 2000.0 + (0.40 - v) / 0.40 * 1000.0;
   }
   // Clamp
   if (ntu < 0.0)    ntu = 0.0;
