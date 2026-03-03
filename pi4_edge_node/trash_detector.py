@@ -17,14 +17,29 @@ class TrashDetector:
 
     def __init__(self):
         self.model = None
+        self.model_type = None    # "onnx" or "pt"
         self.camera = False       # True when camera test passes
         self._tmp = os.path.join(tempfile.gettempdir(), "river_frame.jpg")
 
     def load_model(self):
-        """Load the YOLOv8 model file."""
+        """Load the YOLOv8 model — prefers ONNX (avoids illegal-instruction
+        crashes on Pi4 ARM Cortex-A72), falls back to .pt if not found."""
+        # Try ONNX first (much safer on Pi4 — no PyTorch inference needed)
+        onnx_path = getattr(config, "MODEL_ONNX", "best.onnx")
+        if os.path.isfile(onnx_path):
+            try:
+                self.model = YOLO(onnx_path, task="detect")
+                self.model_type = "onnx"
+                log.info("YOLOv8 ONNX model loaded: %s (safe for Pi4)", onnx_path)
+                return True
+            except Exception as e:
+                log.warning("ONNX load failed (%s), trying .pt...", e)
+
+        # Fall back to PyTorch .pt model
         try:
             self.model = YOLO(config.MODEL_PATH)
-            log.info("YOLOv8 model loaded: %s", config.MODEL_PATH)
+            self.model_type = "pt"
+            log.info("YOLOv8 PyTorch model loaded: %s", config.MODEL_PATH)
             return True
         except Exception as e:
             log.error("Failed to load model: %s", e)
