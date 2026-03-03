@@ -3,8 +3,9 @@ ultralytics>=8.0.0
 numpy>=1.24.0
 requests>=2.31.0
 Pillow>=10.0.0
-onnxruntime>=1.16.0
+opencv-python-headless>=4.8.0
+# onnxruntime is optional — OpenCV DNN backend is used by default
 # Camera capture uses the libcamera-still CLI tool (pre-installed on
 # Raspberry Pi OS Bookworm). No picamera2 Python dependency is needed.
-# ONNX Runtime is used for inference on Pi4 to avoid 'Illegal instruction'
-# crashes that occur with PyTorch on ARM Cortex-A72.
+# On Pi4, OpenCV DNN reads best.onnx directly — avoids 'Illegal instruction'
+# crashes from PyTorch/onnxruntime on ARM Cortex-A72.
