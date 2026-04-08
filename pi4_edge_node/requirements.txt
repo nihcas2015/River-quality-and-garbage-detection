@@ -1,0 +1,9 @@
+paho-mqtt==1.6.1
+ultralytics>=8.0.0
+numpy>=1.24.0,<2.0
+requests>=2.31.0
+Pillow>=10.0.0
+opencv-python-headless>=4.8.0
+# Camera capture uses picamera2 (pre-installed on Pi OS Bookworm)
+# For older versions: sudo apt-get install -y python3-picamera2
+# Model inference: ONNX (fastest, via OpenCV DNN) or .pt (PyTorch fallback)

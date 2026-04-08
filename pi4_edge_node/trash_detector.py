@@ -1,0 +1,310 @@
+"""YOLOv8 trash detector — runs inference on Pi Camera V2 frames using rpicamera2.
+
+Supports two backends (tried in order):
+  1. ONNX via ultralytics + OpenCV DNN (safe on Pi4)
+  2. PyTorch .pt via ultralytics (if onnxruntime available)
+"""
+
+import logging
+import os
+import tempfile
+import numpy as np
+import cv2
+from PIL import Image
+import config
+
+log = logging.getLogger(__name__)
+
+# Try to import rpicamera2
+try:
+    from picamera2 import Picamera2
+    PICAMERA2_AVAILABLE = True
+except ImportError:
+    log.warning("picamera2 not available — camera disabled")
+    PICAMERA2_AVAILABLE = False
+
+# Class names from config (or fall back to generic indices)
+CLASS_NAMES = getattr(config, "YOLO_CLASSES", [])
+
+
+# ── OpenCV DNN helpers (no PyTorch / no onnxruntime) ─────────
+
+def _letterbox(img, new_shape=640):
+    """Resize + pad image to square (letterbox) for YOLO input."""
+    h, w = img.shape[:2]
+    scale = new_shape / max(h, w)
+    nw, nh = int(w * scale), int(h * scale)
+    img_resized = cv2.resize(img, (nw, nh), interpolation=cv2.INTER_LINEAR)
+    canvas = np.full((new_shape, new_shape, 3), 114, dtype=np.uint8)
+    dw, dh = (new_shape - nw) // 2, (new_shape - nh) // 2
+    canvas[dh:dh + nh, dw:dw + nw] = img_resized
+    return canvas, scale, dw, dh
+
+
+def _cv_nms(boxes, scores, conf_thresh, iou_thresh=0.45):
+    """Apply Non-Maximum Suppression and return filtered indices."""
+    indices = cv2.dnn.NMSBoxes(
+        boxes.tolist(), scores.tolist(), conf_thresh, iou_thresh)
+    if len(indices) == 0:
+        return []
+    return indices.flatten().tolist()
+
+
+class TrashDetector:
+    """Loads a YOLOv8 model and detects trash in camera frames using rpicamera2."""
+
+    def __init__(self):
+        self.model = None         # ultralytics YOLO or None
+        self.cv_net = None        # OpenCV DNN net (fallback)
+        self.model_type = None    # "onnx", "pt", or "cv_dnn"
+        self.camera = None        # Picamera2 instance
+        self._input_size = 640    # YOLOv8 default input
+        
+        if PICAMERA2_AVAILABLE:
+            try:
+                self.camera_available = True
+                log.info("rpicamera2 available")
+            except Exception as e:
+                log.error("rpicamera2 error: %s", e)
+                self.camera_available = False
+        else:
+            self.camera_available = False
+
+    def load_model(self):
+        """Load the YOLOv8 model. Tries ONNX first, then .pt
+        ONNX is safer on Pi4 (no Illegal instruction on Cortex-A72)"""
+        
+        onnx_path = getattr(config, "MODEL_ONNX", "best.onnx")
+        pt_path = getattr(config, "MODEL_PATH", "best.pt")
+
+        # ── 1. Try ONNX (safest — uses OpenCV DNN or onnxruntime) ──────
+        if os.path.isfile(onnx_path):
+            try:
+                # Try OpenCV DNN first (no dependencies)
+                net = cv2.dnn.readNetFromONNX(onnx_path)
+                net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
+                net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
+                # Sanity check
+                dummy = np.zeros((1, 3, self._input_size, self._input_size),
+                                dtype=np.float32)
+                net.setInput(dummy)
+                net.forward()
+                self.cv_net = net
+                self.model_type = "cv_dnn"
+                log.info("✓ Model loaded via OpenCV DNN: %s", onnx_path)
+                return True
+            except Exception as e:
+                log.warning("OpenCV DNN failed (%s), trying ultralytics ONNX...", e)
+            
+            # Fallback: try ultralytics with onnxruntime
+            try:
+                from ultralytics import YOLO
+                self.model = YOLO(onnx_path, task="detect")
+                self.model_type = "onnx"
+                log.info("✓ Model loaded via ultralytics ONNX: %s", onnx_path)
+                return True
+            except Exception as e:
+                log.warning("ONNX ultralytics failed (%s), trying .pt...", e)
+
+        # ── 2. Try PyTorch .pt (fallback) ──────────────────────────────
+        if os.path.isfile(pt_path):
+            try:
+                from ultralytics import YOLO
+                self.model = YOLO(pt_path)
+                self.model_type = "pt"
+                log.info("✓ Model loaded via PyTorch: %s", pt_path)
+                return True
+            except Exception as e:
+                log.warning("PyTorch .pt failed (%s)", e)
+
+        log.error("✗ No model found — tried %s and %s", onnx_path, pt_path)
+        return False
+
+    def open_camera(self):
+        """Initialize Pi Camera V2 via rpicamera2 library."""
+        if not PICAMERA2_AVAILABLE:
+            log.error("rpicamera2 not available — install: sudo apt-get install -y python3-picamera2")
+            return False
+        
+        try:
+            self.camera = Picamera2()
+            config = self.camera.create_preview_configuration(
+                main={"format": "RGB888", "size": (config.FRAME_WIDTH, config.FRAME_HEIGHT)}
+            )
+            self.camera.configure(config)
+            self.camera.start()
+            log.info("✓ Pi Camera OK (%dx%d via rpicamera2)", 
+                     config.FRAME_WIDTH, config.FRAME_HEIGHT)
+            return True
+        except Exception as e:
+            log.error("✗ Cannot open camera: %s", e)
+            log.error("  Ensure camera is enabled: sudo raspi-config → Interface Options → Camera")
+            return False
+
+    def _capture_frame(self):
+        """Capture a frame from rpicamera2 → numpy RGB."""
+        if self.camera is None:
+            return None
+        try:
+            frame = self.camera.capture_array("main")
+            return frame  # Already RGB from rpicamera2
+        except Exception as e:
+            log.error("Failed to capture frame: %s", e)
+            return None
+
+    def _detect_cv_dnn(self, frame):
+        """Run inference using OpenCV DNN backend (no PyTorch needed)."""
+        img, scale, dw, dh = _letterbox(frame, self._input_size)
+        blob = cv2.dnn.blobFromImage(
+            img, scalefactor=1.0 / 255.0,
+            size=(self._input_size, self._input_size),
+            swapRB=True, crop=False)
+        self.cv_net.setInput(blob)
+        output = self.cv_net.forward()   # shape: (1, 4+num_classes, num_preds)
+
+        # YOLOv8 output: (1, 4+C, N) — transpose to (N, 4+C)
+        if output.ndim == 3:
+            output = output[0]                     # (4+C, N)
+        preds = output.T                           # (N, 4+C)
+        num_classes = preds.shape[1] - 4
+
+        # Extract boxes (cx, cy, w, h) and class scores
+        cx, cy, w, h = preds[:, 0], preds[:, 1], preds[:, 2], preds[:, 3]
+        class_scores = preds[:, 4:]                # (N, C)
+        max_scores = np.max(class_scores, axis=1)
+        class_ids = np.argmax(class_scores, axis=1)
+
+        # Filter by confidence
+        conf_thresh = config.CONFIDENCE
+        mask = max_scores >= conf_thresh
+        if not np.any(mask):
+            return {"trash_count": 0, "detections": [], "class_counts": {}}
+
+        cx, cy, w, h = cx[mask], cy[mask], w[mask], h[mask]
+        max_scores = max_scores[mask]
+        class_ids = class_ids[mask]
+
+        # Convert cx,cy,w,h → x1,y1,w,h for NMS
+        boxes_xywh = np.stack([cx - w / 2, cy - h / 2, w, h], axis=1)
+
+        # NMS
+        keep = _cv_nms(boxes_xywh, max_scores, conf_thresh, 0.45)
+        if not keep:
+            return {"trash_count": 0, "detections": [], "class_counts": {}}
+
+        detections = []
+        class_counts = {}
+        for i in keep:
+            x1 = (cx[i] - w[i] / 2 - dw) / scale
+            y1 = (cy[i] - h[i] / 2 - dh) / scale
+            x2 = (cx[i] + w[i] / 2 - dw) / scale
+            y2 = (cy[i] + h[i] / 2 - dh) / scale
+            cid = int(class_ids[i])
+            cls_name = (CLASS_NAMES[cid] if cid < len(CLASS_NAMES)
+                        else f"class_{cid}")
+            detections.append({
+                "class": cls_name,
+                "confidence": round(float(max_scores[i]), 3),
+                "bbox": [float(x1), float(y1), float(x2), float(y2)],
+            })
+            class_counts[cls_name] = class_counts.get(cls_name, 0) + 1
+
+        return {
+            "trash_count": len(detections),
+            "detections": detections,
+            "class_counts": class_counts,
+        }
+
+    def _detect_ultralytics(self, frame):
+        """Run inference via ultralytics YOLO (ONNX or .pt)."""
+        results = self.model(frame, conf=config.CONFIDENCE, verbose=False)
+        detections = []
+        class_counts = {}
+        for r in results:
+            for box in r.boxes:
+                cls_name = r.names[int(box.cls[0])]
+                detections.append({
+                    "class": cls_name,
+                    "confidence": round(float(box.conf[0]), 3),
+                    "bbox": box.xyxy[0].tolist(),
+                })
+                class_counts[cls_name] = class_counts.get(cls_name, 0) + 1
+        return {
+            "trash_count": len(detections),
+            "detections": detections,
+            "class_counts": class_counts,
+        }
+
+    def detect(self):
+        """Capture one frame and run YOLO inference (auto-selects backend)."""
+        if self.camera is None or (self.model is None and self.cv_net is None):
+            return {"trash_count": 0, "detections": []}
+
+        try:
+            frame = self._capture_frame()
+            if frame is None:
+                return {"trash_count": 0, "detections": []}
+        except Exception as e:
+            log.warning("Frame capture failed: %s", e)
+            return {"trash_count": 0, "detections": []}
+
+        try:
+            if self.model_type == "cv_dnn":
+                return self._detect_cv_dnn(frame)
+            else:  # "onnx" or "pt"
+                return self._detect_ultralytics(frame)
+        except Exception as e:
+            log.warning("Inference failed (%s): %s", self.model_type, e)
+            return {"trash_count": 0, "detections": []}
+
+    # ── Federated Learning helpers ────────────────────────────
+
+    def get_head_weights(self):
+        """Extract flattened weights from the YOLOv8 detection head.
+        Only works with PyTorch .pt model; returns None for DNN/ONNX."""
+        if self.model is None or self.model_type == "cv_dnn":
+            log.debug("Weight extraction not available for %s backend",
+                      self.model_type)
+            return None
+        try:
+            import torch
+            head = self.model.model.model[-1]   # Detect layer
+            weights = []
+            for p in head.parameters():
+                weights.extend(p.detach().cpu().numpy().flatten().tolist())
+            log.info("Extracted %d head-weight values", len(weights))
+            return weights
+        except Exception as e:
+            log.error("Weight extraction failed: %s", e)
+            return None
+
+    def apply_head_weights(self, flat_weights):
+        """Replace detection-head weights with aggregated global weights.
+        Only works with PyTorch .pt model."""
+        if self.model is None or flat_weights is None:
+            return False
+        if self.model_type == "cv_dnn":
+            log.debug("Weight application not available for cv_dnn backend")
+            return False
+        try:
+            import torch
+            head = self.model.model.model[-1]
+            idx = 0
+            for p in head.parameters():
+                numel = p.numel()
+                chunk = flat_weights[idx:idx + numel]
+                p.data.copy_(torch.tensor(chunk, dtype=p.dtype).reshape(p.shape))
+                idx += numel
+            log.info("Applied %d global head-weight values", idx)
+            return True
+        except Exception as e:
+            log.error("Weight application failed: %s", e)
+            return False
+
+    def release(self):
+        self.camera = False
+        try:
+            os.remove(self._tmp)
+        except OSError:
+            pass
+        log.info("Camera released")
