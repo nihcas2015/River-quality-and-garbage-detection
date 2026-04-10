@@ -22,11 +22,27 @@ class SensorReader:
     def start(self):
         """Connect to the MQTT broker and start the network loop."""
         try:
+            log.info("Attempting MQTT connection to %s:%d...", 
+                     config.MQTT_BROKER, config.MQTT_PORT)
             self.client.connect(config.MQTT_BROKER, config.MQTT_PORT, keepalive=60)
             self.client.loop_start()
-            log.info("MQTT client started")
+            
+            # Wait up to 5 seconds for connection to establish
+            import time
+            max_wait = 5.0
+            start_time = time.time()
+            while not self.connected and (time.time() - start_time) < max_wait:
+                time.sleep(0.1)
+            
+            if self.connected:
+                log.info("✓ MQTT connected successfully to %s:%d", 
+                         config.MQTT_BROKER, config.MQTT_PORT)
+            else:
+                log.warning("⚠ MQTT connection pending (timeout), will retry...")
         except Exception as e:
-            log.error("MQTT connect failed: %s", e)
+            log.error("✗ MQTT connection failed: %s", e)
+            log.error("  → Check if Mosquitto is running: 'sudo systemctl status mosquitto'")
+            log.error("  → Or start it: 'sudo systemctl start mosquitto'")
 
     def stop(self):
         self.client.loop_stop()
@@ -40,9 +56,16 @@ class SensorReader:
             self.connected = True
             client.subscribe(config.MQTT_TOPIC_DATA)
             client.subscribe(config.MQTT_TOPIC_STATUS)
-            log.info("Subscribed to MQTT topics")
+            log.info("✓ Subscribed to MQTT topics: %s, %s", 
+                     config.MQTT_TOPIC_DATA, config.MQTT_TOPIC_STATUS)
         else:
-            log.error("MQTT connect rc=%d", rc)
+            self.connected = False
+            log.error("✗ MQTT connection failed with rc=%d", rc)
+            log.error("  → rc=1: MQTT version rejected")
+            log.error("  → rc=2: Invalid client identifier")
+            log.error("  → rc=3: Server unavailable")
+            log.error("  → rc=4: Bad username/password")
+            log.error("  → rc=5: Not authorized")
 
     def _on_message(self, client, userdata, msg):
         try:
@@ -51,21 +74,31 @@ class SensorReader:
 
             if topic == config.MQTT_TOPIC_DATA:
                 node_id = data.get("node_id", "unknown")
-                self.latest[node_id] = {
-                    "temperature": data.get("temperature", 0.0),
-                    "ph": data.get("ph", 7.0),
-                    "turbidity": data.get("turbidity", 0.0),
-                    "timestamp": time.time(),
-                }
-                log.debug("Sensor data from %s: temp=%.2f pH=%.2f turb=%.1f",
-                          node_id, data.get("temperature", 0),
-                          data.get("ph", 0), data.get("turbidity", 0))
+                temp = data.get("temperature", 0.0)
+                ph = data.get("ph", 7.0)
+                turb = data.get("turbidity", 0.0)
+                
+                # Validate sensor readings are within expected ranges
+                if -50 < temp < 50 and 0 <= ph <= 14 and 0 <= turb <= 3000:
+                    self.latest[node_id] = {
+                        "temperature": temp,
+                        "ph": ph,
+                        "turbidity": turb,
+                        "timestamp": time.time(),
+                    }
+                    log.debug("✓ Sensor data from %s: temp=%.2f pH=%.2f turb=%.1f",
+                              node_id, temp, ph, turb)
+                else:
+                    log.warning("⚠ Invalid sensor values from %s: temp=%.2f pH=%.2f turb=%.1f",
+                                node_id, temp, ph, turb)
 
             elif topic == config.MQTT_TOPIC_STATUS:
                 log.info("ESP32 status: %s", data)
 
-        except json.JSONDecodeError:
-            log.warning("Bad JSON on %s", msg.topic)
+        except json.JSONDecodeError as e:
+            log.warning("⚠ Bad JSON on %s: %s", msg.topic, e)
+        except Exception as e:
+            log.error("✗ Message handler error: %s", e)
 
     # ── public helpers ───────────────────────────────────────
 

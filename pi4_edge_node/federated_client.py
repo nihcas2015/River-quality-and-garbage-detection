@@ -8,8 +8,9 @@ log = logging.getLogger(__name__)
 
 BASE = config.SERVER_URL + "/api"
 TIMEOUT = 10
+MAX_RETRIES = 3
 
-log.info("Pi5 server target: %s", BASE)
+log.info("🎯 Pi5 server target: %s", BASE)
 
 
 def register():
@@ -20,10 +21,24 @@ def register():
             "node_id": config.NODE_ID,
             "node_type": "raspberry_pi4",
         }, timeout=TIMEOUT)
-        log.info("Register → %s  status=%s  body=%s", url, r.status_code, r.text[:200])
-        return r.ok
+        
+        if r.ok:
+            log.info("✓ Registration successful: %s", r.text[:200])
+            return True
+        else:
+            log.warning("⚠ Registration failed (HTTP %d): %s", 
+                       r.status_code, r.text[:200])
+            return False
+    except requests.exceptions.ConnectionError as e:
+        log.error("✗ Cannot reach Pi5 server: %s", e)
+        log.error("  → Check if Pi5 is running on %s:%d", 
+                 config.PI5_IP, config.PI5_PORT)
+        return False
+    except requests.exceptions.Timeout:
+        log.error("✗ Registration timeout (Pi5 not responding)")
+        return False
     except Exception as e:
-        log.error("Register → %s  FAILED: %s", url, e)
+        log.error("✗ Registration error: %s", e)
         return False
 
 
@@ -38,10 +53,22 @@ def send_data(sensor_data, detection_result, anomalies):
             "anomalies": anomalies,
         }
         r = requests.post(url, json=payload, timeout=TIMEOUT)
-        log.info("Send data → %s  status=%s", url, r.status_code)
-        return r.ok
+        
+        if r.ok:
+            log.debug("✓ Data submitted (HTTP %d)", r.status_code)
+            return True
+        else:
+            log.warning("⚠ Data submission failed (HTTP %d): %s",
+                       r.status_code, r.text[:200])
+            return False
+    except requests.exceptions.ConnectionError:
+        log.error("✗ Cannot reach Pi5 (connection error)")
+        return False
+    except requests.exceptions.Timeout:
+        log.warning("⚠ Data submission timeout")
+        return False
     except Exception as e:
-        log.error("Send data → %s  FAILED: %s", url, e)
+        log.error("✗ Send data error: %s", e)
         return False
 
 
@@ -51,9 +78,17 @@ def heartbeat():
         r = requests.post(f"{BASE}/federation/heartbeat", json={
             "node_id": config.NODE_ID,
         }, timeout=TIMEOUT)
-        return r.ok
+        if r.ok:
+            log.debug("✓ Heartbeat sent")
+            return True
+        else:
+            log.debug("⚠ Heartbeat failed (HTTP %d)", r.status_code)
+            return False
+    except requests.exceptions.Timeout:
+        log.debug("⚠ Heartbeat timeout")
+        return False
     except Exception as e:
-        log.debug("Heartbeat FAILED: %s", e)
+        log.debug("⚠ Heartbeat error: %s", e)
         return False
 
 
@@ -65,10 +100,18 @@ def submit_update(weights):
             "node_id": config.NODE_ID,
             "weights": weights,
         }, timeout=30)
-        log.info("Submit update → %s  status=%s", url, r.status_code)
-        return r.ok
+        
+        if r.ok:
+            log.debug("✓ Model weights submitted (HTTP %d)", r.status_code)
+            return True
+        else:
+            log.warning("⚠ Weight submission failed (HTTP %d)", r.status_code)
+            return False
+    except requests.exceptions.Timeout:
+        log.warning("⚠ Weight submission timeout")
+        return False
     except Exception as e:
-        log.error("Submit update → %s  FAILED: %s", url, e)
+        log.error("✗ Submit update error: %s", e)
         return False
 
 
@@ -79,9 +122,14 @@ def get_global_weights():
         r = requests.get(url, timeout=TIMEOUT)
         if r.ok:
             data = r.json()
-            log.info("Global weights round=%s  has_weights=%s",
-                     data.get("round"), data.get("weights") is not None)
+            log.debug("✓ Global weights fetched (round %s)", data.get("round"))
             return data
+        else:
+            log.debug("⚠ Cannot fetch global weights (HTTP %d)", r.status_code)
+            return None
+    except requests.exceptions.Timeout:
+        log.debug("⚠ Global weights timeout")
+        return None
     except Exception as e:
-        log.debug("Get global weights failed: %s", e)
-    return None
+        log.debug("⚠ Get global weights error: %s", e)
+        return None

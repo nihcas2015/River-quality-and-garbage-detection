@@ -86,31 +86,79 @@ float turbEMA = -1.0;   // exponential moving average for turbidity (init flag)
 // ─── FUNCTIONS ──────────────────────────────────────────────
 
 void connectWiFi() {
+  Serial.println("\n[WiFi] Connecting...");
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  Serial.print("Connecting to WiFi");
-  while (WiFi.status() != WL_CONNECTED) {
+  
+  int attempts = 0;
+  int maxAttempts = 25;  // ~25 seconds
+  
+  Serial.print("[WiFi] Connecting");
+  while (WiFi.status() != WL_CONNECTED && attempts < maxAttempts) {
     delay(500);
     Serial.print(".");
+    attempts++;
   }
-  Serial.printf("\nWiFi connected — IP: %s\n", WiFi.localIP().toString().c_str());
+  
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.printf("\n[✓] WiFi connected\n");
+    Serial.printf("    IP: %s\n", WiFi.localIP().toString().c_str());
+  } else {
+    Serial.printf("\n[✗] WiFi connection FAILED (status=%d)\n", WiFi.status());
+    Serial.println("    Check WIFI_SSID and WIFI_PASSWORD");
+  }
 }
 
 void connectMQTT() {
-  while (!mqtt.connected()) {
-    Serial.print("Connecting to MQTT...");
+  int attempts = 0;
+  int maxAttempts = 10;
+  
+  while (!mqtt.connected() && attempts < maxAttempts) {
+    Serial.print("[MQTT] Connecting...");
+    
     if (mqtt.connect(NODE_ID)) {
-      Serial.println(" connected");
+      Serial.println(" [✓] connected");
+      
+      // Publish online status
       StaticJsonDocument<128> doc;
       doc["node_id"] = NODE_ID;
       doc["status"]  = "online";
       char buf[128];
       serializeJson(doc, buf);
       mqtt.publish(TOPIC_STATUS, buf);
+      
+      Serial.printf("[✓] MQTT online status published\n");
+      Serial.printf("    Node: %s | Broker: %s:%d\n", 
+                    NODE_ID, MQTT_SERVER, MQTT_PORT);
+      return;
     } else {
-      Serial.printf(" failed (rc=%d), retrying...\n", mqtt.state());
+      int rc = mqtt.state();
+      Serial.printf(" [✗] failed (rc=%d)\n", rc);
+      
+      // Decode error codes
+      switch(rc) {
+        case -4: Serial.println("    → MQTT_CONNECTION_TIMEOUT"); break;
+        case -3: Serial.println("    → MQTT_CONNECTION_LOST"); break;
+        case -2: Serial.println("    → MQTT_CONNECT_FAILED"); break;
+        case -1: Serial.println("    → MQTT_DISCONNECTED"); break;
+        case 0: Serial.println("    → MQTT_CONNECTED"); break;
+        case 1: Serial.println("    → MQTT_CONNECT_BAD_PROTOCOL"); break;
+        case 2: Serial.println("    → MQTT_CONNECT_BAD_CLIENT_ID"); break;
+        case 3: Serial.println("    → MQTT_CONNECT_UNAVAILABLE"); break;
+        case 4: Serial.println("    → MQTT_CONNECT_BAD_CREDENTIALS"); break;
+        case 5: Serial.println("    → MQTT_CONNECT_UNAUTHORIZED"); break;
+        default: Serial.printf("    → Unknown error code %d\n", rc);
+      }
+      
       delay(MQTT_RETRY_MS);
+      attempts++;
     }
+  }
+  
+  if (!mqtt.connected()) {
+    Serial.printf("[✗] MQTT connection failed after %d attempts\n", maxAttempts);
+    Serial.printf("    → Check MQTT_SERVER: %s:%d\n", MQTT_SERVER, MQTT_PORT);
+    Serial.printf("    → Verify Pi4 is running");
   }
 }
 
@@ -281,7 +329,9 @@ void publishSensorData(float temperature, float ph, float turbidity) {
 void setup() {
   Serial.begin(115200);
   delay(1000);
-  Serial.println("\n=== River Monitor — ESP32-S3-N16R8 ===");
+  Serial.println("\n==================================================");
+  Serial.println("River Monitor — ESP32-S3-N16R8");
+  Serial.println("==================================================");
 
   analogReadResolution(12);       // 12-bit ADC
   analogSetAttenuation(ADC_11db); // full 0-3.3 V range
@@ -292,51 +342,101 @@ void setup() {
 
   tempSensor.begin();
 
-  // ── ADC pin scanner — find where the signal actually is ──
+  // ── Check sensors at startup ──
   delay(500);
-  Serial.println("[Boot] Scanning ADC1 pins for signal...");
+  Serial.println("\n[Sensors] Diagnostic scan...");
+  
+  // 1. Check temperature sensor
+  tempSensor.requestTemperatures();
+  float testTemp = tempSensor.getTempCByIndex(0);
+  if (testTemp == DEVICE_DISCONNECTED_C) {
+    Serial.printf("[X] DS18B20 NOT DETECTED on GPIO %d\n", DS18B20_PIN);
+    Serial.println("    -> Check wiring and power connections");
+  } else {
+    Serial.printf("[OK] DS18B20 OK (%.2f C) on GPIO %d\n", testTemp, DS18B20_PIN);
+  }
+  
+  // 2. Check pH sensor
+  long phTotal = 0;
+  for (int i = 0; i < 20; i++) {
+    phTotal += analogRead(PH_SENSOR_PIN);
+    delay(10);
+  }
+  float phRaw = phTotal / 20.0;
+  float phVolt = phRaw * (3.3 / 4095.0);
+  if (phRaw > 10.0) {
+    Serial.printf("[OK] pH sensor OK (raw:%d, %.2fV) on GPIO %d\n", 
+                  (int)phRaw, phVolt, PH_SENSOR_PIN);
+  } else {
+    Serial.printf("[X] pH sensor LOW SIGNAL (raw:%d, %.2fV) on GPIO %d\n", 
+                  (int)phRaw, phVolt, PH_SENSOR_PIN);
+    Serial.println("    -> Check sensor power and wiring");
+  }
+  
+  // 3. Check turbidity sensor (ADC pin scan)
+  Serial.println("\n[ADC] Pin scanner...");
   const int scanPins[] = {1, 2, 3, 5, 6, 7, 8, 9, 10};
   const int scanCount  = sizeof(scanPins) / sizeof(scanPins[0]);
   for (int p = 0; p < scanCount; p++) {
     analogSetPinAttenuation(scanPins[p], ADC_11db);
     int raw = analogRead(scanPins[p]);
     float v = raw * (3.3 / 4095.0);
-    Serial.printf("  GPIO %2d : raw=%4d  (%.3f V)%s\n",
+    Serial.printf("  GPIO %2d: raw=%4d (%.3fV)%s\n",
                   scanPins[p], raw, v,
-                  (scanPins[p] == TURB_SENSOR_PIN) ? "  ← TURB" :
-                  (scanPins[p] == PH_SENSOR_PIN)   ? "  ← pH"   : "");
+                  (scanPins[p] == TURB_SENSOR_PIN) ? "  <- TURB CONFIG" : "");
   }
+  
   int rawTurb = analogRead(TURB_SENSOR_PIN);
   if (rawTurb == 0) {
-    Serial.println("WARNING: Turbidity ADC reads 0 on configured pin!");
-    Serial.println("  1) Is the TSD-10 sensor board powered (5 V VCC + GND)?");
-    Serial.printf("  2) Is the voltage divider output connected to GPIO %d?\n", TURB_SENSOR_PIN);
-    Serial.println("  3) Check the pin scan above — if another pin shows voltage,");
-    Serial.println("     move #define TURB_SENSOR_PIN to that GPIO number.");
+    Serial.printf("\n[X] Turbidity at GPIO %d reads 0\n", TURB_SENSOR_PIN);
+    Serial.println("    -> Check if TSD-10 sensor board is powered (5V)");
+    Serial.println("    -> Check voltage divider output connection");
+    Serial.println("    -> See pin scan above for a working GPIO");
   } else {
-    Serial.printf("[Boot] Turbidity pin GPIO %d OK — raw=%d (%.3f V)\n",
-                  TURB_SENSOR_PIN, rawTurb, rawTurb * (3.3 / 4095.0));
+    Serial.printf("[OK] Turbidity OK (raw:%d, %.3fV) on GPIO %d\n", 
+                  rawTurb, rawTurb * (3.3 / 4095.0), TURB_SENSOR_PIN);
   }
 
+  Serial.println("\n[WiFi] Starting WiFi connection...");
   connectWiFi();
 
+  Serial.println("\n[MQTT] Starting MQTT connection...");
   mqtt.setServer(MQTT_SERVER, MQTT_PORT);
+  connectMQTT();
+  
+  Serial.println("\n==================================================");
+  Serial.println("Setup complete. Ready to send data.");
+  Serial.println("==================================================\n");
 }
 
 void loop() {
-  if (WiFi.status() != WL_CONNECTED) connectWiFi();
-  if (!mqtt.connected()) connectMQTT();
+  // WiFi monitor
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("[WiFi] Lost connection, reconnecting...");
+    connectWiFi();
+  }
+  
+  // MQTT monitor
+  if (!mqtt.connected()) {
+    Serial.println("[MQTT] Lost connection, reconnecting...");
+    connectMQTT();
+  }
+  
   mqtt.loop();
 
+  // Read sensors at regular intervals
   if (millis() - lastReadTime >= READ_INTERVAL_MS) {
     lastReadTime = millis();
 
+    Serial.println("\n[Reading sensors...]");
     float temp = readTemperature();
     float ph   = readPH();
     float turb = readTurbidity();
 
     if (temp != -999.0) {
       publishSensorData(temp, ph, turb);
+    } else {
+      Serial.println("[X] Temperature sensor not available, skipping publish");
     }
   }
 }
