@@ -52,6 +52,10 @@ trash_class_totals = {}  # {class_name: total_count} aggregated across all event
 system_trace = []     # [{event, source, detail, timestamp}] for diagnostics
 fed_server = FederatedServer(min_nodes=1, round_timeout=300)
 
+# Unknown object discovery — populated by /api/discovery/new_label
+# {label: {node_id, cluster_id, sighting_count, first_seen, last_seen, zones}}
+unknown_labels = {}
+
 
 # ── Helper ───────────────────────────────────────────────────
 def now_iso():
@@ -98,6 +102,12 @@ def get_river_summary():
         if node_stats:
             sensor_stats = node_stats   # latest node's stats
 
+    # Aggregate unknown object summaries across all nodes
+    total_unknown_sightings = 0
+    for v in latest_readings.values():
+        us = v.get("detection_result", {}).get("unknown_summary", {})
+        total_unknown_sightings += us.get("total_unknown_sightings", 0)
+
     return {
         "avg_temperature": sum(temps) / len(temps) if temps else 0,
         "avg_ph": sum(phs) / len(phs) if phs else 7,
@@ -108,6 +118,11 @@ def get_river_summary():
         "anomalies": anomaly_counts,
         "node_count": len(latest_readings),
         "sensor_stats": sensor_stats,
+        "unknown_objects": {
+            "total_sightings": total_unknown_sightings,
+            "auto_labels_created": len(unknown_labels),
+            "labels": list(unknown_labels.values()),
+        },
     }
 
 
@@ -128,7 +143,7 @@ def submit_data():
              d.get("detection_result", {}).get("trash_count", 0))
     latest_readings[node_id] = {
         "sensor_data": d.get("sensor_data", {}),
-        "detection_result": d.get("detection_result", {}),
+        "detection_result": d.get("detection_result", {}),  # includes unknown_summary
         "anomalies": d.get("anomalies", {}),
         "timestamp": now_iso(),
     }
@@ -326,6 +341,76 @@ def diagnostics():
     })
 
 
+# ── Unknown Object Discovery ─────────────────────────────────
+@app.route("/api/discovery/new_label", methods=["POST"])
+def new_label():
+    """
+    Receive a newly discovered unknown waste label from an edge node.
+    Aggregates sightings across zones — if multiple nodes see the same
+    cluster, sighting counts are summed. An alert is raised on first discovery.
+    """
+    d = request.json
+    label        = d.get("label")
+    node_id      = d.get("node_id", "unknown")
+    cluster_id   = d.get("cluster_id", "auto")
+    sighting_count = int(d.get("sighting_count", 1))
+    timestamp    = d.get("timestamp", time.time())
+
+    if not label:
+        return jsonify({"error": "missing label"}), 400
+
+    is_new = label not in unknown_labels
+    if is_new:
+        unknown_labels[label] = {
+            "label":          label,
+            "cluster_id":     cluster_id,
+            "sighting_count": sighting_count,
+            "first_seen":     now_iso(),
+            "last_seen":      now_iso(),
+            "zones":          [node_id],
+        }
+        # Raise a dashboard alert for the new discovery
+        alerts.append({
+            "message":   f"New waste category auto-discovered: '{label}' at {node_id}",
+            "severity":  "info",
+            "type":      "unknown_object",
+            "node_id":   node_id,
+            "label":     label,
+            "timestamp": now_iso(),
+        })
+        if len(alerts) > 200:
+            alerts[:] = alerts[-200:]
+        log.info("🆕 New unknown label registered: %s from %s (%d sightings)",
+                 label, node_id, sighting_count)
+    else:
+        # Update existing entry — accumulate sightings, track all reporting zones
+        entry = unknown_labels[label]
+        entry["sighting_count"] += sighting_count
+        entry["last_seen"] = now_iso()
+        if node_id not in entry["zones"]:
+            entry["zones"].append(node_id)
+        log.info("🔄 Unknown label '%s' updated: total sightings=%d, zones=%s",
+                 label, entry["sighting_count"], entry["zones"])
+
+    trace("unknown_label_discovered" if is_new else "unknown_label_updated",
+          source=node_id, detail=f"label={label} sightings={sighting_count}")
+
+    return jsonify({
+        "status":  "created" if is_new else "updated",
+        "label":   label,
+        "total_sightings": unknown_labels[label]["sighting_count"],
+    })
+
+
+@app.route("/api/discovery/unknown_labels", methods=["GET"])
+def get_unknown_labels():
+    """Return all auto-discovered unknown waste labels."""
+    return jsonify({
+        "unknown_labels": list(unknown_labels.values()),
+        "total":          len(unknown_labels),
+    })
+
+
 # Catch-all for unknown /api/* paths — returns 404 instead of index.html
 @app.route("/api/<path:path>")
 def api_not_found(path):
@@ -363,6 +448,7 @@ def broadcast_loop():
             "latest_readings": latest_readings,
             "alerts": alerts[-20:],
             "trash_class_totals": trash_class_totals,
+            "unknown_labels": list(unknown_labels.values()),
         }
         socketio.emit("river_update", payload)
 

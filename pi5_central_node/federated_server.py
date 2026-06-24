@@ -25,12 +25,30 @@ class FederatedServer:
         self.lock = threading.Lock()
 
     def receive_update(self, node_id, weights):
-        """Store a local model update from an edge node."""
+        """
+        Store a local model update from an edge node.
+
+        weights can be:
+          - dict  {layer_name: flat_weight_list}  — from detection-head filtering
+          - list  [float, ...]                     — legacy flat array
+        Both are normalised to a flat numpy array for FedAvg.
+        """
         with self.lock:
-            self.updates[node_id] = np.array(weights, dtype=np.float32)
-            log.info("Update from %s (round %d), %d/%d received",
+            if isinstance(weights, dict):
+                # Flatten all layer tensors into a single 1-D array,
+                # sorted by key so order is consistent across nodes.
+                flat = []
+                for k in sorted(weights.keys()):
+                    v = weights[k]
+                    flat.extend(v if isinstance(v, list) else [v])
+                arr = np.array(flat, dtype=np.float32)
+            else:
+                arr = np.array(weights, dtype=np.float32)
+
+            self.updates[node_id] = arr
+            log.info("Update from %s (round %d), %d/%d received — %d values",
                      node_id, self.current_round,
-                     len(self.updates), self.min_nodes)
+                     len(self.updates), self.min_nodes, len(arr))
 
         if len(self.updates) >= self.min_nodes:
             self.aggregate()

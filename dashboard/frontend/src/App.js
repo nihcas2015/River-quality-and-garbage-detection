@@ -21,6 +21,7 @@ function App() {
   const [latestReadings, setLatestReadings] = useState({});
   const [alerts, setAlerts] = useState([]);
   const [trashClassTotals, setTrashClassTotals] = useState({});
+  const [unknownLabels, setUnknownLabels] = useState([]);
   const [isConnected, setIsConnected] = useState(false);
   const [loading, setLoading] = useState(true);
 
@@ -51,6 +52,7 @@ function App() {
       if (data.latest_readings) setLatestReadings(data.latest_readings);
       if (data.alerts) setAlerts(data.alerts);
       if (data.trash_class_totals) setTrashClassTotals(data.trash_class_totals);
+      if (data.unknown_labels) setUnknownLabels(data.unknown_labels);
     });
 
     return () => {
@@ -61,17 +63,19 @@ function App() {
   const fetchInitialData = async () => {
     try {
       setLoading(true);
-      const [riverRes, statusRes, readingsRes, alertsRes] = await Promise.all([
+      const [riverRes, statusRes, readingsRes, alertsRes, unknownRes] = await Promise.all([
         apiClient.get('/dashboard/river_data'),
         apiClient.get('/federation/status'),
         apiClient.get('/dashboard/latest_readings'),
         apiClient.get('/dashboard/alerts?limit=20'),
+        apiClient.get('/discovery/unknown_labels'),
       ]);
 
       setRiverData(riverRes.data);
       setFederationStatus(statusRes.data);
       setLatestReadings(readingsRes.data || {});
       setAlerts(alertsRes.data.alerts || []);
+      setUnknownLabels(unknownRes.data.unknown_labels || []);
     } catch (error) {
       console.error('Error fetching initial data:', error);
     } finally {
@@ -104,6 +108,7 @@ function App() {
                       federationStatus={federationStatus}
                       latestReadings={latestReadings}
                       alerts={alerts}
+                      unknownLabels={unknownLabels}
                     />
                   } 
                 />

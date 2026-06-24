@@ -37,13 +37,14 @@ function Alerts({ alerts }) {
 
   const getTypeLabel = (type) => {
     const labels = {
-      threshold: 'Threshold',
-      spike: 'Sudden Change',
-      zscore: 'Statistical Outlier',
-      drift: 'Trend Drift',
-      anomaly: 'Anomaly',
-      trash: 'Trash Detection',
-      system: 'System',
+      threshold:      'Threshold',
+      spike:          'Sudden Change',
+      zscore:         'Statistical Outlier',
+      drift:          'Trend Drift',
+      anomaly:        'Anomaly',
+      trash:          'Trash Detection',
+      system:         'System',
+      unknown_object: 'Unknown Object',
     };
     return labels[type] || (type ? type.charAt(0).toUpperCase() + type.slice(1) : 'Unknown');
   };
@@ -83,6 +84,7 @@ function Alerts({ alerts }) {
             <option value="zscore">Statistical Outlier</option>
             <option value="drift">Trend Drift</option>
             <option value="trash">Trash Detection</option>
+            <option value="unknown_object">Unknown Object</option>
             <option value="system">System</option>
           </select>
         </div>
