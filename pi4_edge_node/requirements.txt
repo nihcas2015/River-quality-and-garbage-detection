@@ -1,21 +1,16 @@
-paho-mqtt==1.6.1
+paho-mqtt>=1.6.1
 ultralytics>=8.0.0
 numpy>=1.24.0
 requests>=2.31.0
 Pillow>=10.0.0
 opencv-python-headless>=4.8.0
 
-# Camera options (install ONE of the following):
-# Option 1 (recommended): picamera2 — modern Python library for Pi Camera V2
-# pip install picamera2
-# Option 2 (fallback): libcamera-tools — command-line tools
-# sudo apt install -y libcamera-tools
-# Option 3 (last resort): OpenCV VideoCapture — already installed above
+# HiveMQ cloud MQTT uses TLS — ssl is built into Python, no extra install needed
 
-# Model options (install ONE of the following):
-# Option 1 (recommended): ONNX — fast inference on Pi4
-# → copy best.onnx to current directory
-# Option 2 (fallback): PyTorch — original model format
-# → copy best.pt to current directory
-# onnxruntime is optional — OpenCV DNN backend is used by default
+# Camera (install ONE):
+# pip install picamera2              ← recommended for Pi4 Bookworm
+# sudo apt install -y libcamera-tools ← fallback
 
+# Model (place ONE in project directory):
+# best.onnx  ← faster on Pi4 (convert: yolo export model=best.pt format=onnx)
+# best.pt    ← original PyTorch weights
