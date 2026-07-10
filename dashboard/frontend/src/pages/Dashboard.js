@@ -53,7 +53,7 @@ const CustomTooltip = ({ active, payload, label }) => {
   );
 };
 
-function Dashboard({ riverData, federationStatus, latestReadings, alerts }) {
+function Dashboard({ riverData, federationStatus, latestReadings, alerts, unknownLabels = [] }) {
   const [chartData, setChartData] = useState([]);
   const [nodeMetrics, setNodeMetrics] = useState([]);
 
@@ -139,12 +139,16 @@ function Dashboard({ riverData, federationStatus, latestReadings, alerts }) {
   const sensorStats = riverData?.sensor_stats || {};
   const trashClassCounts = riverData?.trash_class_counts || {};
   const trashClassTotals = riverData?.trash_class_totals || {};
+  const unknownObjects = riverData?.unknown_objects || {};
+  const unknownSightings = unknownObjects.total_sightings || 0;
+  // Merge server-pushed riverData labels with prop (prop updates via socket, riverData on REST)
+  const unknownLabelList = unknownLabels.length > 0 ? unknownLabels : (unknownObjects.labels || []);
 
   const CLASS_COLORS_MAP = {
-    Plastic: '#ef4444', Bottle: '#f97316', Metal: '#6366f1',
-    Glass: '#3b82f6', Branch: '#22c55e', Textile: '#8b5cf6', Algae: '#06b6d4',
+    Plastic: '#ef4444', Paper: '#f97316', Metal: '#6366f1',
+    Glass: '#3b82f6', Organic: '#22c55e', Textile: '#8b5cf6',
   };
-  const FB_COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#8b5cf6', '#06b6d4'];
+  const FB_COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#8b5cf6'];
 
   // Combine current + historical class data for pie
   const classPieData = Object.entries(
@@ -213,6 +217,13 @@ function Dashboard({ riverData, federationStatus, latestReadings, alerts }) {
           unit="items"
           icon={Trash2}
           status={totalTrash > 5 ? 'warning' : 'normal'}
+        />
+        <MetricCard
+          title="Unknown Objects"
+          value={unknownLabelList.length}
+          unit={`auto-labels (${unknownSightings} sightings)`}
+          icon={Eye}
+          status={unknownLabelList.length > 0 ? 'warning' : 'normal'}
         />
       </div>
 
@@ -489,6 +500,37 @@ function Dashboard({ riverData, federationStatus, latestReadings, alerts }) {
           )}
         </div>
       </div>
+
+      {/* ── Unknown Object Discovery ── */}
+      {unknownLabelList.length > 0 && (
+        <div className="recent-alerts" style={{ marginTop: '1.5rem' }}>
+          <div className="section-header">
+            <h3><Eye size={18} /> Auto-Discovered Waste Categories</h3>
+            <span className="badge">{unknownLabelList.length}</span>
+          </div>
+          <div className="alerts-list">
+            {unknownLabelList.map((label, index) => (
+              <div key={index} className="alert-item info">
+                <Eye size={16} />
+                <div className="alert-content">
+                  <p className="alert-message">
+                    <strong>{label.label}</strong>
+                    {' — '}
+                    {label.sighting_count} sighting{label.sighting_count !== 1 ? 's' : ''}
+                    {label.zones?.length > 0 && ` across ${label.zones.length} zone${label.zones.length !== 1 ? 's' : ''}`}
+                  </p>
+                  <span className="alert-node">
+                    Zones: {label.zones?.join(', ') || '—'}
+                  </span>
+                </div>
+                <span className="alert-time">
+                  {label.first_seen ? new Date(label.first_seen).toLocaleDateString() : '—'}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
