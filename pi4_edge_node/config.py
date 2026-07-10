@@ -1,24 +1,45 @@
 # Configuration for Raspberry Pi 4 Edge Node
 # ───────────────────────────────────────────
+# ARCHITECTURE (per patent disclosure):
+#   ESP32-S3  --local WiFi/MQTT-->  Pi4 (this node, Mosquitto broker)
+#   Pi4 (edge)  --MQTT/TLS-->  HiveMQ Cloud  <--MQTT/TLS--  Pi5 (central)
+# The ESP32 <-> Pi4 hop stays on local WiFi (sensors are physically next to
+# the node). The Pi4 <-> Pi5 hop goes over HiveMQ Cloud so a node can be
+# placed anywhere on the river without needing to be on the same LAN as Pi5.
+#
 # INSTRUCTIONS:
-#   1. On your Pi5, run: hostname -I
-#   2. Replace PI5_IP below with that address (e.g. "192.168.1.50")
-#   3. On your Pi4, run: hostname -I  → use that as PI4_IP in ESP32 code
+#   1. Create a free/paid cluster at https://console.hivemq.cloud
+#   2. Copy the Cluster URL, and create a device username/password under
+#      "Access Management" -> paste them below.
 # ───────────────────────────────────────────
 
-# ── Network addresses ─────────────────────
-PI5_IP   = "192.168.1.100"          # ← Pi5 IP (run 'hostname -I' on Pi5)
-PI5_PORT = 5000                      # ← Pi5 server port (must match server.py)
-SERVER_URL = f"http://{PI5_IP}:{PI5_PORT}"
+# ── Node identity ──────────────────────────
+NODE_ID  = "pi4_edge_01"          # unique per zone, e.g. pi4_edge_zone2
+ZONE_ID  = "zone_1"
 
-PI4_IP   = "192.168.1.101"          # ← This Pi4's IP (for ESP32 MQTT target)
-NODE_ID  = "pi4_edge_01"
-
-# ── MQTT (Mosquitto runs on this Pi4) ─────
-MQTT_BROKER = "localhost"            # ESP32 connects to this Pi4's IP
+# ── Local MQTT (Mosquitto on THIS Pi4, ESP32 connects here) ──
+MQTT_BROKER = "localhost"            # ESP32 publishes to this Pi4's IP
 MQTT_PORT   = 1883
 MQTT_TOPIC_DATA   = "river/sensor_data"
 MQTT_TOPIC_STATUS = "river/status"
+
+# ── HiveMQ Cloud (long-range Pi4 <-> Pi5 link) ────────────
+HIVEMQ_HOST = "xxxxxxxxxxxx.s1.eu.hivemq.cloud"   # ← your cluster URL
+HIVEMQ_PORT = 8883                                 # TLS port
+HIVEMQ_USERNAME = "river_edge_client"               # ← device credential
+HIVEMQ_PASSWORD = "CHANGE_ME"                       # ← device credential
+HIVEMQ_USE_TLS  = True
+HIVEMQ_KEEPALIVE = 60
+
+# Topic namespace: river/{zone}/...
+HIVEMQ_TOPIC_PREFIX          = f"river/{ZONE_ID}"
+HIVEMQ_TOPIC_REGISTER        = f"{HIVEMQ_TOPIC_PREFIX}/register"
+HIVEMQ_TOPIC_HEARTBEAT       = f"{HIVEMQ_TOPIC_PREFIX}/heartbeat"
+HIVEMQ_TOPIC_DATA_SUBMIT     = f"{HIVEMQ_TOPIC_PREFIX}/data"
+HIVEMQ_TOPIC_FED_SUBMIT      = f"{HIVEMQ_TOPIC_PREFIX}/federation/submit"
+HIVEMQ_TOPIC_FED_GLOBAL      = f"{HIVEMQ_TOPIC_PREFIX}/federation/global"   # Pi5 -> Pi4
+HIVEMQ_TOPIC_LABEL_PROPOSAL  = f"{HIVEMQ_TOPIC_PREFIX}/label_discovery/proposal"
+HIVEMQ_TOPIC_LABEL_REGISTRY  = "river/label_registry/global"                 # shared across all zones
 
 # ── Pi Camera V2 (libcamera-still) ────────
 FRAME_WIDTH  = 640
@@ -32,15 +53,32 @@ CONFIDENCE = 0.3                      # match notebook conf=0.3
 # ── YOLO class names (from river-trash dataset.yaml) ──
 YOLO_CLASSES = [
     "Plastic",
-    "Bottle",
+    "Paper",
     "Metal",
     "Glass",
-    "Branch",
+    "Organic",
     "Textile",
-    "Algae",
 ]
 # If your dataset has different classes, update this list to match
 # the 'names' field in your data.yaml
+# NOTE: this list is mutated at runtime by label_discovery.py when a new
+# "unknown_label_N" class is promoted, so both the detector and the
+# federated head must be able to grow an extra output class.
+
+# ── Autonomous Waste Label Discovery ─────
+# A detection is a "candidate unknown" when its best class confidence sits
+# BELOW this bar (model isn't sure it's any known class) but still above a
+# noise floor so pure background isn't clustered.
+UNKNOWN_CONF_LOW   = 0.10   # noise floor — ignore below this
+UNKNOWN_CONF_HIGH  = 0.45   # below this = "unknown" (disclosure range 0.30-0.60)
+
+# Visual-similarity clustering of unknown crops
+LABEL_DISCOVERY_SIMILARITY_THRESHOLD = 0.85   # cosine similarity to join a cluster
+LABEL_DISCOVERY_FREQUENCY_THRESHOLD  = 15     # occurrences before a cluster becomes a new label (disclosure range 10-100)
+LABEL_DISCOVERY_MAX_BUFFER           = 500    # cap on stored unknown crops (memory bound on Pi4)
+LABEL_DISCOVERY_CROP_SIZE            = 64     # unknown crops resized to this for cheap feature hashing
+LABEL_DISCOVERY_PREFIX               = "unknown_label_"
+LABEL_DISCOVERY_SAMPLES_DIR          = "unknown_samples"   # crops saved here for later annotation/training
 
 # ── Timing (seconds) ─────────────────────
 SENSOR_POLL         = 5

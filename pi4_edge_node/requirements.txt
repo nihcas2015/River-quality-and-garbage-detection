@@ -1,9 +1,13 @@
-paho-mqtt==1.6.1
+paho-mqtt==1.6.1        # used for BOTH local ESP32<->Pi4 broker AND HiveMQ Cloud TLS link
 ultralytics>=8.0.0
-numpy>=1.24.0,<2.0
-requests>=2.31.0
+numpy>=1.24.0
 Pillow>=10.0.0
 opencv-python-headless>=4.8.0
-# Camera capture uses picamera2 (pre-installed on Pi OS Bookworm)
-# For older versions: sudo apt-get install -y python3-picamera2
-# Model inference: ONNX (fastest, via OpenCV DNN) or .pt (PyTorch fallback)
+# 'requests' is intentionally NOT required — all Pi4<->Pi5 communication now
+# goes over HiveMQ Cloud (MQTT/TLS), not HTTP, matching patent Claim 3.
+# onnxruntime is optional — OpenCV DNN backend is used by default.
+# Camera capture uses the libcamera-still CLI tool (pre-installed on
+# Raspberry Pi OS Bookworm 64-bit). No picamera2 Python dependency needed.
+# On Pi4, OpenCV DNN reads best.onnx directly — avoids 'Illegal instruction'
+# crashes from PyTorch/onnxruntime on ARM Cortex-A72 (no NEON-optimised
+# PyTorch wheel for that core on 32-bit userland).

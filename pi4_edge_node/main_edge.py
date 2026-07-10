@@ -1,19 +1,28 @@
 """
 Main entry point for the Pi4 Edge Node.
-Runs three background loops:
-  1. Sensor polling  (MQTT data from ESP32)
-  2. Trash detection (YOLOv8 on Pi Camera V2 frames)
-  3. Communication   (sends data to Pi5 central server)
+
+Runs five background loops:
+  1. Sensor polling      (MQTT data from ESP32, over LOCAL Wi-Fi)
+  2. Trash detection     (YOLOv8 on Pi Camera V2 frames)
+  3. Label discovery     (clusters unknown detections -> unknown_label_N)
+  4. Communication       (sends data to Pi5, over HiveMQ Cloud)
+  5. Federation          (FedAvg round-trip, over HiveMQ Cloud)
+
+Per the patent disclosure:
+  ESP32 <--local Wi-Fi/MQTT--> Pi4 (this node)
+  Pi4   <--HiveMQ Cloud/TLS--> Pi5 (central aggregation + dashboard)
 """
 
 import time
 import logging
 import threading
+import cv2
 
 import config
 from sensor_reader import SensorReader
 from trash_detector import TrashDetector
 from anomaly_detector import AnomalyDetector
+from label_discovery import LabelDiscovery
 import federated_client as fc
 
 # ── Logging ──────────────────────────────────────────────────
@@ -27,12 +36,13 @@ log = logging.getLogger("edge")
 sensor = SensorReader()
 detector = TrashDetector()
 anomaly_det = AnomalyDetector()
-latest_detection = {"trash_count": 0, "detections": []}
+label_disc = LabelDiscovery()
+latest_detection = {"trash_count": 0, "detections": [], "unknown_candidates": []}
 running = True
 
 
 def sensor_loop():
-    """Poll MQTT data at regular intervals (logging only)."""
+    """Poll local-Wi-Fi MQTT sensor data at regular intervals (logging only)."""
     while running:
         data = sensor.get_aggregated()
         if data["node_count"] > 0:
@@ -43,18 +53,52 @@ def sensor_loop():
 
 
 def detection_loop():
-    """Capture frames from Pi Camera V2 and run YOLOv8."""
+    """Capture frames from Pi Camera V2, run YOLOv8, and feed any
+    low-confidence 'unknown' detections into the autonomous label
+    discovery pipeline (Claim 4)."""
     global latest_detection
     while running:
         result = detector.detect()
         latest_detection = result
+
         if result["trash_count"] > 0:
             log.info("Trash detected: %d items", result["trash_count"])
+
+        for cand in result.get("unknown_candidates", []):
+            crop_rgb = cand.get("crop")
+            if crop_rgb is None:
+                continue
+            crop_bgr = cv2.cvtColor(crop_rgb, cv2.COLOR_RGB2BGR)
+            new_label = label_disc.observe(crop_bgr, cand["confidence"], cand["bbox"])
+            if new_label:
+                log.warning("New waste category autonomously discovered: %s", new_label)
+
         time.sleep(config.DETECTION_INTERVAL)
 
 
+def label_federation_loop():
+    """Ship any newly-promoted 'unknown_label_N' classes to Pi5 over
+    HiveMQ Cloud so every zone's model benefits, and pull down labels
+    that OTHER zones have already had confirmed into the shared registry."""
+    while running:
+        for entry in label_disc.pop_pending_labels():
+            if fc.submit_label_proposal(entry):
+                log.info("Label proposal '%s' sent to Pi5", entry["label"])
+            else:
+                log.warning("Failed to send label proposal '%s' (will not retry)", entry["label"])
+
+        registry = fc.get_label_registry()
+        if registry:
+            for cls_name in registry.get("classes", []):
+                if cls_name not in config.YOLO_CLASSES:
+                    config.YOLO_CLASSES.append(cls_name)
+                    log.info("Adopted class '%s' discovered by another zone", cls_name)
+
+        time.sleep(config.SEND_INTERVAL)
+
+
 def communication_loop():
-    """Periodically send aggregated data + detections to Pi5."""
+    """Periodically send aggregated data + detections to Pi5 over HiveMQ Cloud."""
     last_send = 0
     last_hb = 0
     registered = False
@@ -62,23 +106,19 @@ def communication_loop():
     while running:
         now = time.time()
 
-        # Retry registration until it succeeds
         if not registered:
             registered = fc.register()
             if not registered:
-                log.warning("Pi5 registration pending — will retry in 10 s")
+                log.warning("HiveMQ Cloud registration pending — will retry in 10 s")
                 time.sleep(10)
                 continue
 
-        # Heartbeat
         if now - last_hb >= config.HEARTBEAT_INTERVAL:
             fc.heartbeat()
             last_hb = now
 
-        # Send data
         if now - last_send >= config.SEND_INTERVAL:
             data = sensor.get_aggregated()
-            # Run time-series anomaly detection (only with real sensor data)
             if data.get("node_count", 0) > 0:
                 anomalies = anomaly_det.update(
                     temperature=data.get("temperature", 0),
@@ -92,23 +132,33 @@ def communication_loop():
                              "total_anomalies": anomaly_det.total_anomalies,
                              "stats": {"temperature": None, "ph": None,
                                        "turbidity": None}}
-            fc.send_data(data, latest_detection, anomalies)
+
+            # Strip raw crop arrays before publishing — only summaries
+            # (class, confidence, bbox) leave the edge node, never images.
+            detection_summary = {
+                "trash_count": latest_detection.get("trash_count", 0),
+                "detections": latest_detection.get("detections", []),
+                "class_counts": latest_detection.get("class_counts", {}),
+                "unknown_candidate_count": len(latest_detection.get("unknown_candidates", [])),
+            }
+
+            fc.send_data(data, detection_summary, anomalies)
             last_send = now
-            log.info("Data sent to Pi5  |  temp=%.1f  pH=%.2f  turb=%.0f  trash=%d  anomalies=%d",
+            log.info("Data sent to Pi5 (HiveMQ)  |  temp=%.1f  pH=%.2f  turb=%.0f  trash=%d  anomalies=%d",
                      data.get("temperature", 0), data.get("ph", 0),
                      data.get("turbidity", 0),
-                     latest_detection.get("trash_count", 0),
+                     detection_summary["trash_count"],
                      len(anomalies.get("anomaly_list", [])))
 
         time.sleep(1)
 
 
 def federation_loop():
-    """Periodically participate in federated learning rounds."""
+    """Periodically participate in federated learning rounds (FedAvg),
+    entirely over HiveMQ Cloud."""
     last_round = 0
 
-    # Wait for model to be ready
-    while running and detector.model is None:
+    while running and detector.model is None and detector.cv_net is None:
         time.sleep(5)
 
     log.info("Federation loop started (interval=%ds)", config.FEDERATION_INTERVAL)
@@ -116,18 +166,16 @@ def federation_loop():
     while running:
         time.sleep(config.FEDERATION_INTERVAL)
 
-        # 1. Extract local detection-head weights
         weights = detector.get_head_weights()
         if weights is None:
-            log.warning("Federation: no model weights available")
+            log.debug("Federation: no extractable head weights this round "
+                      "(cv_dnn/onnx backends don't support live weight sync)")
             continue
 
-        # 2. Send local update to Pi5
         if not fc.submit_update(weights):
             log.warning("Federation: failed to submit update")
             continue
 
-        # 3. Fetch global aggregated weights
         global_data = fc.get_global_weights()
         if global_data and global_data.get("weights"):
             new_round = global_data.get("round", 0)
@@ -140,30 +188,31 @@ def federation_loop():
 
 
 def main():
-    log.info("=== Pi4 Edge Node starting ===")
-    log.info("Target Pi5 server: %s", config.SERVER_URL)
+    log.info("=== Pi4 Edge Node starting (zone=%s, node=%s) ===",
+              config.ZONE_ID, config.NODE_ID)
+    log.info("HiveMQ Cloud target: %s:%d", config.HIVEMQ_HOST, config.HIVEMQ_PORT)
 
-    if "<PI5_IP>" in config.SERVER_URL:
-        log.error("config.py still has placeholder <PI5_IP>! "
-                  "Run 'hostname -I' on your Pi5 and update SERVER_URL.")
-        return
-
-    # 1. Start MQTT subscriber
+    # 1. Start local-Wi-Fi MQTT subscriber (ESP32 sensor data)
     sensor.start()
 
-    # 2. Load YOLOv8 model & open camera
+    # 2. Start HiveMQ Cloud connection (Pi4 <-> Pi5)
+    if not fc.start():
+        log.error("Could not start HiveMQ Cloud client — check config.py credentials. "
+                   "Continuing in local-only mode (no federation / dashboard sync).")
+
+    # 3. Load YOLOv8 model & open camera
     model_ok = detector.load_model()
     camera_ok = detector.open_camera()
     if not model_ok:
         log.error("YOLOv8 model failed to load — detection & federation disabled")
     if not camera_ok:
         log.error("Pi Camera failed to open — detection disabled")
-        log.error("To fix: run 'bash check_camera.sh' for diagnostics")
 
-    # 3. Launch threads
+    # 4. Launch threads
     threads = [
         threading.Thread(target=sensor_loop, daemon=True, name="sensor"),
         threading.Thread(target=detection_loop, daemon=True, name="detection"),
+        threading.Thread(target=label_federation_loop, daemon=True, name="label_fed"),
         threading.Thread(target=communication_loop, daemon=True, name="comms"),
         threading.Thread(target=federation_loop, daemon=True, name="federation"),
     ]
@@ -179,6 +228,7 @@ def main():
         running = False
         log.info("Shutting down...")
         sensor.stop()
+        fc.stop()
         detector.release()
 
 
