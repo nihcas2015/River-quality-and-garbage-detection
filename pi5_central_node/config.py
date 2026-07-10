@@ -6,10 +6,10 @@
 NODE_ID = "pi5_central"
 
 # ── HiveMQ Cloud ──────────────────────────
-HIVEMQ_HOST = "xxxxxxxxxxxx.s1.eu.hivemq.cloud"   # ← same cluster URL as edge nodes
+HIVEMQ_HOST = "e7aa014fd5fe4eefb78c336a540b2d00.s1.eu.hivemq.cloud:8883"   # ← same cluster URL as edge nodes
 HIVEMQ_PORT = 8883
 HIVEMQ_USERNAME = "river_central_client"           # ← separate device credential
-HIVEMQ_PASSWORD = "CHANGE_ME"
+HIVEMQ_PASSWORD = "12345678"
 HIVEMQ_USE_TLS = True
 HIVEMQ_KEEPALIVE = 60
 HIVEMQ_QOS = 1

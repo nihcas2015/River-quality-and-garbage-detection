@@ -24,10 +24,10 @@ MQTT_TOPIC_DATA   = "river/sensor_data"
 MQTT_TOPIC_STATUS = "river/status"
 
 # ── HiveMQ Cloud (long-range Pi4 <-> Pi5 link) ────────────
-HIVEMQ_HOST = "xxxxxxxxxxxx.s1.eu.hivemq.cloud"   # ← your cluster URL
+HIVEMQ_HOST = "e7aa014fd5fe4eefb78c336a540b2d00.s1.eu.hivemq.cloud:8883"   # ← your cluster URL
 HIVEMQ_PORT = 8883                                 # TLS port
 HIVEMQ_USERNAME = "river_edge_client"               # ← device credential
-HIVEMQ_PASSWORD = "CHANGE_ME"                       # ← device credential
+HIVEMQ_PASSWORD = "12345678"                       # ← device credential
 HIVEMQ_USE_TLS  = True
 HIVEMQ_KEEPALIVE = 60
 
