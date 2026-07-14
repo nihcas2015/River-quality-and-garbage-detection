@@ -102,6 +102,7 @@ def get_river_summary():
         "anomalies": anomaly_counts,
         "node_count": len(latest_readings),
         "sensor_stats": sensor_stats,
+        "unknown_objects": fed_server.get_unknown_objects_summary(),
     }
 
 
@@ -372,10 +373,23 @@ def get_alerts():
 @app.route("/api/dashboard/trash_history", methods=["GET"])
 def trash_history():
     limit = request.args.get("limit", 100, type=int)
+    hours = request.args.get("hours", type=int)
+    events = trash_events
+    if hours:
+        cutoff = datetime.utcnow().timestamp() - hours * 3600
+        events = [
+            e for e in trash_events
+            if datetime.fromisoformat(e["timestamp"].rstrip("Z")).timestamp() >= cutoff
+        ]
+    events = events[-limit:]
+    class_totals_in_range = {}
+    for e in events:
+        for cls_name, cnt in e.get("class_counts", {}).items():
+            class_totals_in_range[cls_name] = class_totals_in_range.get(cls_name, 0) + cnt
     return jsonify({
-        "trash_events": trash_events[-limit:],
-        "total_count": sum(e["count"] for e in trash_events),
-        "class_totals": trash_class_totals,
+        "trash_events": events,
+        "total_count": sum(e["count"] for e in events),
+        "class_totals": class_totals_in_range or trash_class_totals,
     })
 
 
