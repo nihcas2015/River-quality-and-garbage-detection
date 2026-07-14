@@ -30,6 +30,9 @@ HIVEMQ_USERNAME = "river_edge_client"               # ← device credential
 HIVEMQ_PASSWORD = "12345678"                       # ← device credential
 HIVEMQ_USE_TLS  = True
 HIVEMQ_KEEPALIVE = 60
+HIVEMQ_CLIENT_ID = f"{NODE_ID}_hivemq"
+HIVEMQ_QOS = 1
+HIVEMQ_MAX_PAYLOAD_BYTES = 20 * 1024 * 1024
 
 # Topic namespace: river/{zone}/...
 HIVEMQ_TOPIC_PREFIX          = f"river/{ZONE_ID}"

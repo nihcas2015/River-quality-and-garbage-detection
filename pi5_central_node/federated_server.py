@@ -61,6 +61,22 @@ class FederatedServer:
             if not self.updates:
                 return False
             arrays = list(self.updates.values())
+            lengths = [len(a) for a in arrays]
+            if len(set(lengths)) > 1:
+                # Zones can independently grow their YOLO head via autonomous
+                # label discovery, so weight vectors may differ in length
+                # across zones in the same round. Average only the
+                # majority-length group instead of crashing np.mean on a
+                # ragged array; the rest wait for the next round.
+                majority_len = max(set(lengths), key=lengths.count)
+                skipped = [nid for nid, a in self.updates.items() if len(a) != majority_len]
+                log.warning("Skipping %d node(s) with mismatched weight length this round: %s",
+                            len(skipped), skipped)
+                arrays = [a for a in arrays if len(a) == majority_len]
+                for nid in skipped:
+                    del self.updates[nid]
+                if not arrays:
+                    return False
             self.global_weights = np.mean(arrays, axis=0).tolist()
             self.current_round += 1
             n = len(arrays)
@@ -88,7 +104,7 @@ class FederatedServer:
             entry = self.label_meta.setdefault(label, {
                 "sighting_count": 0,
                 "zones": set(),
-                "first_seen": meta.get("discovered_at") or _now_iso(),
+                "first_seen": _now_iso(),
             })
             entry["sighting_count"] += int(meta.get("sample_count") or 1)
             if zone_id:
