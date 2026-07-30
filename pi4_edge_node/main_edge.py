@@ -44,35 +44,47 @@ latest_detection = {"trash_count": 0, "detections": [], "unknown_candidates": []
 running = True
 
 # ── Periodic reading generator ──────────────────────────────
-CYCLE_PERIOD = 20         # seconds — 10s rising + 10s falling
-EVENT_DURATION = 10       # seconds — first half of the cycle
+NORMAL_DURATION = 20      # seconds — plain water baseline
+ABNORMAL_DURATION = 20    # seconds — mud water / out-of-water event
+CYCLE_PERIOD = NORMAL_DURATION + ABNORMAL_DURATION
+TRANSITION = 2.0          # seconds — short smoothing at each edge, avoids a hard jump
 
 BASE_TEMP = 28.0
-BASE_PH = 7.2
-BASE_TURB = 18.0
+BASE_PH = 7.05
+BASE_TURB = 12.0
+
+PEAK_TEMP = 33.0
+PEAK_PH = 2.5
+PEAK_TURB = 1800.0
 
 
-def _cycle_progress():
-    """0 -> 1 over the first half of the cycle, then 1 -> 0 over the
-    second half, eased with sin() for a smooth rise/fall."""
+def _cycle_ramp():
+    """Returns 0.0 during the normal block, 1.0 during the abnormal block,
+    with a short eased transition at each boundary instead of an instant
+    jump. Clean 20s-normal / 20s-abnormal blocks, not a continuous ramp."""
     phase = time.time() % CYCLE_PERIOD
-    if phase < EVENT_DURATION:
-        progress = phase / EVENT_DURATION
-    else:
-        progress = 1.0 - ((phase - EVENT_DURATION) / EVENT_DURATION)
-    return math.sin(progress * math.pi / 2)
+
+    if phase < NORMAL_DURATION - TRANSITION:
+        return 0.0
+    if phase < NORMAL_DURATION:
+        # ramping up into the abnormal block
+        t = (phase - (NORMAL_DURATION - TRANSITION)) / TRANSITION
+        return math.sin(t * math.pi / 2)
+    if phase < CYCLE_PERIOD - TRANSITION:
+        return 1.0
+    # ramping back down into the normal block
+    t = (phase - (CYCLE_PERIOD - TRANSITION)) / TRANSITION
+    return 1.0 - math.sin(t * math.pi / 2)
 
 
 def generate_sensor_reading():
-    """Temperature/pH/turbidity reading that drifts on its own on a
-    repeating cycle: temp rises (as if out in open air), pH drops (as
-    if out of the water reference), turbidity rises (as if sand/soil
-    were stirred into the water) — then eases back to baseline."""
-    ramp = _cycle_progress()
+    """20s plain-water baseline, then 20s mud-water/out-of-water event,
+    repeating. Short smoothing at the transitions only."""
+    ramp = _cycle_ramp()
 
-    temp = BASE_TEMP + random.uniform(-0.3, 0.3) + ramp * 7.0
-    ph = BASE_PH + random.uniform(-0.1, 0.1) - ramp * 6.5
-    turb = BASE_TURB + random.uniform(-3, 3) + ramp * 2200.0
+    temp = BASE_TEMP + (PEAK_TEMP - BASE_TEMP) * ramp + random.uniform(-0.2, 0.2)
+    ph = BASE_PH + (PEAK_PH - BASE_PH) * ramp + random.uniform(-0.08, 0.08)
+    turb = BASE_TURB + (PEAK_TURB - BASE_TURB) * ramp + random.uniform(-2, 2)
 
     ph = max(0.0, min(14.0, ph))
     turb = max(0.0, min(3000.0, turb))
@@ -82,12 +94,11 @@ def generate_sensor_reading():
 
 
 def generate_detection_reading():
-    """Trash detection reading on the same cycle — reports Plastic and
-    Paper only, appearing during the rising/peak part of the cycle and
-    clearing out once it falls back toward baseline."""
-    ramp = _cycle_progress()
+    """Trash detection follows the same block cycle — reports Plastic and
+    Paper only during the abnormal block."""
+    ramp = _cycle_ramp()
 
-    if ramp < 0.3:
+    if ramp < 0.5:
         return {"trash_count": 0, "detections": [], "class_counts": {},
                 "unknown_candidates": []}
 
