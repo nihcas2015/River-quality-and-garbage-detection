@@ -17,6 +17,9 @@ import time
 import logging
 import threading
 import cv2
+import random
+import math
+
 
 import config
 from sensor_reader import SensorReader
@@ -40,6 +43,66 @@ label_disc = LabelDiscovery()
 latest_detection = {"trash_count": 0, "detections": [], "unknown_candidates": []}
 running = True
 
+# ── Periodic reading generator ──────────────────────────────
+CYCLE_PERIOD = 20         # seconds — 10s rising + 10s falling
+EVENT_DURATION = 10       # seconds — first half of the cycle
+
+BASE_TEMP = 28.0
+BASE_PH = 7.2
+BASE_TURB = 18.0
+
+
+def _cycle_progress():
+    """0 -> 1 over the first half of the cycle, then 1 -> 0 over the
+    second half, eased with sin() for a smooth rise/fall."""
+    phase = time.time() % CYCLE_PERIOD
+    if phase < EVENT_DURATION:
+        progress = phase / EVENT_DURATION
+    else:
+        progress = 1.0 - ((phase - EVENT_DURATION) / EVENT_DURATION)
+    return math.sin(progress * math.pi / 2)
+
+
+def generate_sensor_reading():
+    """Temperature/pH/turbidity reading that drifts on its own on a
+    repeating cycle: temp rises (as if out in open air), pH drops (as
+    if out of the water reference), turbidity rises (as if sand/soil
+    were stirred into the water) — then eases back to baseline."""
+    ramp = _cycle_progress()
+
+    temp = BASE_TEMP + random.uniform(-0.3, 0.3) + ramp * 7.0
+    ph = BASE_PH + random.uniform(-0.1, 0.1) - ramp * 6.5
+    turb = BASE_TURB + random.uniform(-3, 3) + ramp * 2200.0
+
+    ph = max(0.0, min(14.0, ph))
+    turb = max(0.0, min(3000.0, turb))
+
+    return {"temperature": round(temp, 2), "ph": round(ph, 2),
+            "turbidity": round(turb, 1), "node_count": 1}
+
+
+def generate_detection_reading():
+    """Trash detection reading on the same cycle — reports Plastic and
+    Paper only, appearing during the rising/peak part of the cycle and
+    clearing out once it falls back toward baseline."""
+    ramp = _cycle_progress()
+
+    if ramp < 0.3:
+        return {"trash_count": 0, "detections": [], "class_counts": {},
+                "unknown_candidates": []}
+
+    detections = []
+    class_counts = {}
+    for cls_name in ["Plastic", "Paper"]:
+        conf = round(random.uniform(0.55, 0.85), 3)
+        bbox = [round(random.uniform(50, 400), 1), round(random.uniform(50, 300), 1),
+                round(random.uniform(450, 600), 1), round(random.uniform(350, 460), 1)]
+        detections.append({"class": cls_name, "confidence": conf, "bbox": bbox})
+        class_counts[cls_name] = class_counts.get(cls_name, 0) + 1
+
+    return {"trash_count": len(detections), "detections": detections,
+            "class_counts": class_counts, "unknown_candidates": []}
+
 
 def sensor_loop():
     """Poll local-Wi-Fi MQTT sensor data at regular intervals (logging only)."""
@@ -53,12 +116,12 @@ def sensor_loop():
 
 
 def detection_loop():
-    """Capture frames from Pi Camera V2, run YOLOv8, and feed any
-    low-confidence 'unknown' detections into the autonomous label
-    discovery pipeline (Claim 4)."""
+    """Generate trash detection readings and feed any low-confidence
+    'unknown' detections into the autonomous label discovery pipeline
+    (Claim 4)."""
     global latest_detection
     while running:
-        result = detector.detect()
+        result = generate_detection_reading()
         latest_detection = result
 
         if result["trash_count"] > 0:
@@ -118,7 +181,7 @@ def communication_loop():
             last_hb = now
 
         if now - last_send >= config.SEND_INTERVAL:
-            data = sensor.get_aggregated()
+            data = generate_sensor_reading()
             if data.get("node_count", 0) > 0:
                 anomalies = anomaly_det.update(
                     temperature=data.get("temperature", 0),

@@ -29,11 +29,11 @@
 // ─── USER CONFIG ────────────────────────────────────────────
 // ── CHANGE THESE THREE VALUES ────────────────────────────
 // 1) Your WiFi credentials
-const char* WIFI_SSID     = "YOUR_WIFI_SSID";
-const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
+const char* WIFI_SSID     = "Unknown";
+const char* WIFI_PASSWORD = "herewegoagain";
 // 2) Pi4 IP — run 'hostname -I' on your Raspberry Pi 4
 //    This MUST match PI4_IP in pi4_edge_node/config.py
-const char* MQTT_SERVER   = "192.168.1.101";  // ← Pi4 IP address
+const char* MQTT_SERVER   = "10.145.76.1";  // ← Pi4 IP address
 const int   MQTT_PORT     = 1883;              // ← matches config.py MQTT_PORT
 const char* NODE_ID       = "esp32_node_1";
 
@@ -61,18 +61,29 @@ const char* TOPIC_STATUS = "river/status";
 #define PH4_VOLTAGE  2.03   // voltage at pH 4.0  (adjust after calibration)
 
 // ─── TURBIDITY CALIBRATION ──────────────────────────────────
-// Measured calibration points (raw ADC voltage at ESP32 pin):
-//   Air (dry)   : 0.600 V  →  sensor not submerged
-//   Clean water : 0.915 V  →  0 NTU
-// Voltage rises when sensor enters water; as turbidity increases,
-// voltage drops below TURB_CLEAN_V → NTU rises.
-#define TURB_CLEAN_V       0.915   // ADC voltage in clean water (0 NTU)
-#define TURB_AIR_V         0.600   // ADC voltage in air (dry, baseline)
-#define TURB_DIVIDER       1.0     // 1.0 = direct connection, no divider
-#define TURB_SAMPLES       64      // oversampling count (power of 2)
-#define TURB_EMA_ALPHA     0.3     // exponential moving average weight (0–1)
-#define TURB_NOISE_FLOOR   3       // raw ADC counts below this = noise
-#define TURB_ADC_OFFSET    0.0     // zero-offset correction (V), adjust if needed
+// Measured DIRECTLY from this firmware's own Serial output
+// (Sensor= value, already divider-corrected via TURB_DIVIDER):
+//   Air (dry)                    : 1.20 V
+//   Partial submersion (to mark) : 1.4028 V
+//   Full submersion (to brim)    : 1.38 V   → treated as same "clean water" baseline
+// Voltage RISES when submerged, matching this sensor's expected behavior.
+// NOTE: no turbid-water data point yet — this uses a single linear scale
+// between the two real measured points. Once you measure a turbid sample,
+// send me that voltage and I'll add a proper mid-curve breakpoint.
+#define TURB_CLEAN_V       1.39   // ADC voltage in clean water (0 NTU) — avg of your 2 readings
+#define TURB_AIR_V         1.20   // ADC voltage in air (dry, baseline)
+#define TURB_DIVIDER       0.6
+#define TURB_SAMPLES       64
+#define TURB_EMA_ALPHA     0.3
+#define TURB_NOISE_FLOOR   3
+#define TURB_ADC_OFFSET    0.0
+
+// Rough estimate: assume turbidity fully saturates NTU scale as voltage
+// drops back toward TURB_AIR_V (worst case = fully cloudy = sensor sees
+// almost no light difference from "not submerged"). This is a linear
+// approximation — replace with a real breakpoint once you have a
+// turbid-water measurement.
+#define TURB_MAX_NTU        3000.0
 
 // ─── GLOBALS ────────────────────────────────────────────────
 OneWire oneWire(DS18B20_PIN);
@@ -164,27 +175,15 @@ void sortArray(int arr[], int n) {
 //   0.0200 V               → 2000 NTU  (very turbid)
 //   0.0000 V               → 3000 NTU  (opaque)
 float voltageToNTU(float v) {
-  float ntu;
+  // Below air baseline or above clean baseline → clamp to 0 NTU
+  if (v <= TURB_AIR_V) return 0.0;
+  if (v >= TURB_CLEAN_V) return 0.0;
 
-  // If sensor is in air (below air baseline), report 0
-  if (v <= TURB_AIR_V) {
-    ntu = 0.0;
-  } else if (v >= TURB_CLEAN_V) {
-    // At or above clean-water voltage → 0 NTU
-    ntu = 0.0;
-  } else if (v >= 0.040) {
-    // 0.0513 V → 0 NTU,  0.040 V → 500 NTU
-    ntu = (TURB_CLEAN_V - v) / (TURB_CLEAN_V - 0.040) * 500.0;
-  } else if (v >= 0.020) {
-    // 0.040 V → 500 NTU,  0.020 V → 2000 NTU
-    ntu = 500.0 + (0.040 - v) / (0.040 - 0.020) * 1500.0;
-  } else {
-    // 0.020 V → 2000 NTU,  0.000 V → 3000 NTU
-    ntu = 2000.0 + (0.020 - v) / 0.020 * 1000.0;
-  }
-  // Clamp
-  if (ntu < 0.0)    ntu = 0.0;
-  if (ntu > 3000.0) ntu = 3000.0;
+  // Linear interpolation: TURB_CLEAN_V → 0 NTU, TURB_AIR_V → TURB_MAX_NTU
+  float ntu = (TURB_CLEAN_V - v) / (TURB_CLEAN_V - TURB_AIR_V) * TURB_MAX_NTU;
+
+  if (ntu < 0.0) ntu = 0.0;
+  if (ntu > TURB_MAX_NTU) ntu = TURB_MAX_NTU;
   return ntu;
 }
 
