@@ -44,78 +44,56 @@ latest_detection = {"trash_count": 0, "detections": [], "unknown_candidates": []
 running = True
 
 # ── Periodic reading generator ──────────────────────────────
-# Mimics a real ESP32 node: smooth EMA-style drift toward a moving target,
-# not independent random jumps each reading — same idea as the ESP32
-# firmware's own TURB_EMA_ALPHA smoothing.
-NORMAL_DURATION = 30       # seconds — clear water baseline
-ABNORMAL_DURATION = 30     # seconds — sand/mud+salt water, probe lifted for temp
+# Hard step change every 30s — no easing, no gradual drift. First 30s:
+# pure clear water, no anomaly. Next 30s: temperature probe lifted into
+# open air, pH/turbidity probes in salt+mud water — instant jump, not a ramp.
+NORMAL_DURATION = 30       # seconds — pure clear water, no anomaly
+ABNORMAL_DURATION = 30     # seconds — salt+mud water / temp probe lifted
 CYCLE_PERIOD = NORMAL_DURATION + ABNORMAL_DURATION
-TRANSITION = 3.0           # seconds — eased transition at each boundary
 
-# Clear-water baseline (realistic, not exact round numbers)
-BASE_TEMP = 27.8
-BASE_PH = 7.05
-BASE_TURB = 9.0
+# Clear-water baseline
+BASE_TEMP = 28.0
+BASE_PH = 7.0
+BASE_TURB = 8.0
 
-# Temperature probe lifted out of water; pH and turbidity probes stay
-# submerged in water with sand/mud + a little salt stirred in.
-PEAK_TEMP = 31.6       # probe out in open air
-PEAK_PH = 6.35         # mud + a little salt, still submerged — mildly acidic
-PEAK_TURB = 950.0      # sand/mud stirred into water
-
-_EMA_ALPHA = 0.25       # smoothing factor — higher = reacts faster to target
-_state = {"temp": BASE_TEMP, "ph": BASE_PH, "turb": BASE_TURB}
+# Temperature probe lifted out; pH/turbidity probes in salt+mud water
+PEAK_TEMP = 33.0
+PEAK_PH = 6.35
+PEAK_TURB = 950.0
 
 
-def _cycle_ramp():
-    """0.0 during the normal block, 1.0 during the abnormal block, with a
-    short eased transition at each boundary instead of an instant jump."""
+def _is_abnormal():
+    """True during the second half of each 30s/30s cycle — a hard
+    boolean flip, not a gradual ramp."""
     phase = time.time() % CYCLE_PERIOD
-
-    if phase < NORMAL_DURATION - TRANSITION:
-        return 0.0
-    if phase < NORMAL_DURATION:
-        t = (phase - (NORMAL_DURATION - TRANSITION)) / TRANSITION
-        return math.sin(t * math.pi / 2)
-    if phase < CYCLE_PERIOD - TRANSITION:
-        return 1.0
-    t = (phase - (CYCLE_PERIOD - TRANSITION)) / TRANSITION
-    return 1.0 - math.sin(t * math.pi / 2)
+    return phase >= NORMAL_DURATION
 
 
 def generate_sensor_reading():
-    """Realistic, smoothly-drifting temperature/pH/turbidity — EMA-smoothed
-    toward a moving target rather than jumping randomly each call, same
-    smoothing philosophy as the real ESP32 firmware."""
-    ramp = _cycle_ramp()
+    """Sudden step change every 30s: clear water baseline, then an
+    instant jump to temp-out-of-water / salt+mud water for turbidity+pH."""
+    abnormal = _is_abnormal()
 
-    target_temp = BASE_TEMP + (PEAK_TEMP - BASE_TEMP) * ramp
-    target_ph = BASE_PH + (PEAK_PH - BASE_PH) * ramp
-    target_turb = BASE_TURB + (PEAK_TURB - BASE_TURB) * ramp
+    if abnormal:
+        temp = PEAK_TEMP + random.uniform(-0.15, 0.15)
+        ph = PEAK_PH + random.uniform(-0.05, 0.05)
+        turb = PEAK_TURB + random.uniform(-15, 15)
+    else:
+        temp = BASE_TEMP + random.uniform(-0.15, 0.15)
+        ph = BASE_PH + random.uniform(-0.05, 0.05)
+        turb = BASE_TURB + random.uniform(-1.5, 1.5)
 
-    # small per-reading sensor jitter, same order of magnitude as real ADC noise
-    target_temp += random.uniform(-0.08, 0.08)
-    target_ph += random.uniform(-0.03, 0.03)
-    target_turb += random.uniform(-1.0, 1.0)
-
-    _state["temp"] += (target_temp - _state["temp"]) * _EMA_ALPHA
-    _state["ph"] += (target_ph - _state["ph"]) * _EMA_ALPHA
-    _state["turb"] += (target_turb - _state["turb"]) * _EMA_ALPHA
-
-    ph = max(0.0, min(14.0, _state["ph"]))
-    turb = max(0.0, min(3000.0, _state["turb"]))
-    temp = _state["temp"]
+    ph = max(0.0, min(14.0, ph))
+    turb = max(0.0, min(3000.0, turb))
 
     return {"temperature": round(temp, 2), "ph": round(ph, 2),
             "turbidity": round(turb, 1), "node_count": 1}
 
 
 def generate_detection_reading():
-    """Trash detection follows the same block cycle — reports Plastic and
-    Paper only during the abnormal block."""
-    ramp = _cycle_ramp()
-
-    if ramp < 0.5:
+    """No anomaly during the first 30s. During the second 30s, always
+    reports exactly Plastic + Paper — every cycle, not intermittently."""
+    if not _is_abnormal():
         return {"trash_count": 0, "detections": [], "class_counts": {},
                 "unknown_candidates": []}
 
