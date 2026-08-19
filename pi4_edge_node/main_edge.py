@@ -57,11 +57,11 @@ BASE_TEMP = 27.8
 BASE_PH = 7.05
 BASE_TURB = 9.0
 
-# Temperature + pH probes physically lifted out of water; turbidity probe
-# stays submerged with sand stirred into the water.
+# Temperature probe lifted out of water; pH and turbidity probes stay
+# submerged in water with sand/mud + a little salt stirred in.
 PEAK_TEMP = 31.6       # probe out in open air
-PEAK_PH = 0.9          # probe out of water — near-zero, matches air calibration
-PEAK_TURB = 950.0      # sand stirred into water (turbidity probe stays submerged)
+PEAK_PH = 6.35         # mud + a little salt, still submerged — mildly acidic
+PEAK_TURB = 950.0      # sand/mud stirred into water
 
 _EMA_ALPHA = 0.25       # smoothing factor — higher = reacts faster to target
 _state = {"temp": BASE_TEMP, "ph": BASE_PH, "turb": BASE_TURB}
