@@ -62,10 +62,15 @@ PEAK_PH = 6.35
 PEAK_TURB = 950.0
 
 
+_start_time = time.time()
+
+
 def _is_abnormal():
-    """True during the second half of each 30s/30s cycle — a hard
-    boolean flip, not a gradual ramp."""
-    phase = time.time() % CYCLE_PERIOD
+    """True during the second half of each 30s/30s cycle — anchored to
+    when this script started, so it always begins with the normal block
+    first, never mid-cycle."""
+    elapsed = time.time() - _start_time
+    phase = elapsed % CYCLE_PERIOD
     return phase >= NORMAL_DURATION
 
 
