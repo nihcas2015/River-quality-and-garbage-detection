@@ -91,15 +91,20 @@ def generate_sensor_reading():
 
 
 def generate_detection_reading():
-    """No anomaly during the first 30s. During the second 30s, always
-    reports exactly Plastic + Paper — every cycle, not intermittently."""
+    """No anomaly during the first 30s. During the second 30s, reports a
+    varying number of items (1 or 2, randomly Plastic and/or Paper) each
+    detection cycle — not a fixed count every time."""
     if not _is_abnormal():
         return {"trash_count": 0, "detections": [], "class_counts": {},
                 "unknown_candidates": []}
 
+    possible_classes = ["Plastic", "Paper"]
+    num_items = random.choice([1, 1, 2])   # sometimes just 1, sometimes both
+    chosen = random.sample(possible_classes, k=num_items)
+
     detections = []
     class_counts = {}
-    for cls_name in ["Plastic", "Paper"]:
+    for cls_name in chosen:
         conf = round(random.uniform(0.55, 0.85), 3)
         bbox = [round(random.uniform(50, 400), 1), round(random.uniform(50, 300), 1),
                 round(random.uniform(450, 600), 1), round(random.uniform(350, 460), 1)]
