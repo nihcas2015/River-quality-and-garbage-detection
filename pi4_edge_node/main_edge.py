@@ -44,50 +44,67 @@ latest_detection = {"trash_count": 0, "detections": [], "unknown_candidates": []
 running = True
 
 # ── Periodic reading generator ──────────────────────────────
-NORMAL_DURATION = 20      # seconds — plain water baseline
-ABNORMAL_DURATION = 20    # seconds — mud water / out-of-water event
+# Mimics a real ESP32 node: smooth EMA-style drift toward a moving target,
+# not independent random jumps each reading — same idea as the ESP32
+# firmware's own TURB_EMA_ALPHA smoothing.
+NORMAL_DURATION = 30       # seconds — clear water baseline
+ABNORMAL_DURATION = 30     # seconds — sand/mud+salt water, probe lifted for temp
 CYCLE_PERIOD = NORMAL_DURATION + ABNORMAL_DURATION
-TRANSITION = 2.0          # seconds — short smoothing at each edge, avoids a hard jump
+TRANSITION = 3.0           # seconds — eased transition at each boundary
 
-BASE_TEMP = 28.0
+# Clear-water baseline (realistic, not exact round numbers)
+BASE_TEMP = 27.8
 BASE_PH = 7.05
-BASE_TURB = 12.0
+BASE_TURB = 9.0
 
-PEAK_TEMP = 33.0
-PEAK_PH = 0.7
-PEAK_TURB = 1800.0
+# Temperature + pH probes physically lifted out of water; turbidity probe
+# stays submerged with sand stirred into the water.
+PEAK_TEMP = 31.6       # probe out in open air
+PEAK_PH = 0.9          # probe out of water — near-zero, matches air calibration
+PEAK_TURB = 950.0      # sand stirred into water (turbidity probe stays submerged)
+
+_EMA_ALPHA = 0.25       # smoothing factor — higher = reacts faster to target
+_state = {"temp": BASE_TEMP, "ph": BASE_PH, "turb": BASE_TURB}
 
 
 def _cycle_ramp():
-    """Returns 0.0 during the normal block, 1.0 during the abnormal block,
-    with a short eased transition at each boundary instead of an instant
-    jump. Clean 20s-normal / 20s-abnormal blocks, not a continuous ramp."""
+    """0.0 during the normal block, 1.0 during the abnormal block, with a
+    short eased transition at each boundary instead of an instant jump."""
     phase = time.time() % CYCLE_PERIOD
 
     if phase < NORMAL_DURATION - TRANSITION:
         return 0.0
     if phase < NORMAL_DURATION:
-        # ramping up into the abnormal block
         t = (phase - (NORMAL_DURATION - TRANSITION)) / TRANSITION
         return math.sin(t * math.pi / 2)
     if phase < CYCLE_PERIOD - TRANSITION:
         return 1.0
-    # ramping back down into the normal block
     t = (phase - (CYCLE_PERIOD - TRANSITION)) / TRANSITION
     return 1.0 - math.sin(t * math.pi / 2)
 
 
 def generate_sensor_reading():
-    """20s plain-water baseline, then 20s mud-water/out-of-water event,
-    repeating. Short smoothing at the transitions only."""
+    """Realistic, smoothly-drifting temperature/pH/turbidity — EMA-smoothed
+    toward a moving target rather than jumping randomly each call, same
+    smoothing philosophy as the real ESP32 firmware."""
     ramp = _cycle_ramp()
 
-    temp = BASE_TEMP + (PEAK_TEMP - BASE_TEMP) * ramp + random.uniform(-0.2, 0.2)
-    ph = BASE_PH + (PEAK_PH - BASE_PH) * ramp + random.uniform(-0.08, 0.08)
-    turb = BASE_TURB + (PEAK_TURB - BASE_TURB) * ramp + random.uniform(-2, 2)
+    target_temp = BASE_TEMP + (PEAK_TEMP - BASE_TEMP) * ramp
+    target_ph = BASE_PH + (PEAK_PH - BASE_PH) * ramp
+    target_turb = BASE_TURB + (PEAK_TURB - BASE_TURB) * ramp
 
-    ph = max(0.0, min(14.0, ph))
-    turb = max(0.0, min(3000.0, turb))
+    # small per-reading sensor jitter, same order of magnitude as real ADC noise
+    target_temp += random.uniform(-0.08, 0.08)
+    target_ph += random.uniform(-0.03, 0.03)
+    target_turb += random.uniform(-1.0, 1.0)
+
+    _state["temp"] += (target_temp - _state["temp"]) * _EMA_ALPHA
+    _state["ph"] += (target_ph - _state["ph"]) * _EMA_ALPHA
+    _state["turb"] += (target_turb - _state["turb"]) * _EMA_ALPHA
+
+    ph = max(0.0, min(14.0, _state["ph"]))
+    turb = max(0.0, min(3000.0, _state["turb"]))
+    temp = _state["temp"]
 
     return {"temperature": round(temp, 2), "ph": round(ph, 2),
             "turbidity": round(turb, 1), "node_count": 1}
