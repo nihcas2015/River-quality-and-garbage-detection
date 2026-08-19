@@ -96,59 +96,10 @@ def generate_sensor_reading():
             "turbidity": round(turb, 1), "node_count": 1}
 
 
-# ── Synthetic "unknown object" crop generator ────────────────
-# Demonstrates Claim 4 (autonomous label discovery) without live camera
-# hardware: during the abnormal 30s window, the detector encounters a
-# recurring, visually-consistent object it cannot classify into any of
-# the known YOLO_CLASSES (its best-class confidence sits in the
-# UNKNOWN_CONF_LOW..UNKNOWN_CONF_HIGH band). The same "unknown" object
-# keeps appearing frame after frame, is cropped, and handed to
-# label_discovery.py, which clusters visually-similar crops and — once
-# the cluster recurs LABEL_DISCOVERY_FREQUENCY_THRESHOLD times — promotes
-# it to a brand-new provisional class (unknown_label_1, unknown_label_2...)
-# with zero human labeling, exactly as claimed in the disclosure.
-#
-# The crop is a fixed base colour/shape (simulating one consistent unseen
-# object, e.g. an unrecognised drum/tyre-like object) with small per-frame
-# noise, matching real-world camera variance closely enough to stay above
-# LABEL_DISCOVERY_SIMILARITY_THRESHOLD (0.85 cosine similarity) so the
-# crops correctly land in the SAME cluster instead of spawning a new one
-# every frame.
-_UNKNOWN_OBJECT_BASE_COLOR_BGR = (60, 110, 170)   # a consistent rust/orange tone
-_UNKNOWN_OBJECT_SIZE = 96                          # crop side length (pixels)
-
-
-def _make_synthetic_unknown_crop():
-    """Return a numpy BGR crop simulating a recurring unrecognised object."""
-    size = _UNKNOWN_OBJECT_SIZE
-    crop = np.zeros((size, size, 3), dtype=np.uint8)
-    b, g, r = _UNKNOWN_OBJECT_BASE_COLOR_BGR
-    # small per-frame colour jitter so crops aren't bit-identical (mimics
-    # lighting/angle variance) but stay well within the similarity threshold
-    jitter = lambda c: int(max(0, min(255, c + random.randint(-8, 8))))
-    crop[:, :] = (jitter(b), jitter(g), jitter(r))
-
-    # draw a consistent circular silhouette so the shape/edge signature
-    # (captured by the grayscale component of the feature vector) also
-    # repeats frame-to-frame, not just the flat colour
-    center = (size // 2, size // 2)
-    radius = size // 3
-    cv2.circle(crop, center, radius, (jitter(b + 25), jitter(g + 25), jitter(r + 25)), -1)
-
-    # light gaussian noise for realism, kept small enough not to break
-    # cosine-similarity clustering
-    noise = np.random.randint(-4, 5, crop.shape, dtype=np.int16)
-    crop = np.clip(crop.astype(np.int16) + noise, 0, 255).astype(np.uint8)
-    return crop  # BGR, ready for label_discovery._feature_vector()
-
-
 def generate_detection_reading():
     """No anomaly during the first 30s. During the second 30s, reports a
     varying number of items (1 or 2, randomly Plastic and/or Paper) each
-    detection cycle — not a fixed count every time. Also injects a
-    recurring synthetic 'unknown' object crop during the abnormal window
-    so the autonomous label discovery pipeline (Claim 4) has something
-    real to cluster and eventually promote."""
+    detection cycle — not a fixed count every time."""
     if not _is_abnormal():
         return {"trash_count": 0, "detections": [], "class_counts": {},
                 "unknown_candidates": []}
@@ -166,28 +117,8 @@ def generate_detection_reading():
         detections.append({"class": cls_name, "confidence": conf, "bbox": bbox})
         class_counts[cls_name] = class_counts.get(cls_name, 0) + 1
 
-    # Recurring unknown object — confidence deliberately placed inside
-    # config.UNKNOWN_CONF_LOW..UNKNOWN_CONF_HIGH so it's picked up by
-    # LabelDiscovery.is_candidate_unknown() the same way a real low-
-    # confidence YOLO detection would be.
-    unknown_conf = round(random.uniform(
-        config.UNKNOWN_CONF_LOW + 0.02, config.UNKNOWN_CONF_HIGH - 0.02), 3)
-    unknown_bbox = [round(random.uniform(50, 200), 1), round(random.uniform(50, 150), 1),
-                     round(random.uniform(250, 400), 1), round(random.uniform(200, 350), 1)]
-    unknown_crop_bgr = _make_synthetic_unknown_crop()
-    # detection_loop() below expects an RGB crop (it converts RGB->BGR
-    # before handing off to label_discovery, matching the real camera
-    # pipeline in trash_detector.py) — so convert once here.
-    unknown_crop_rgb = cv2.cvtColor(unknown_crop_bgr, cv2.COLOR_BGR2RGB)
-
-    unknown_candidates = [{
-        "confidence": unknown_conf,
-        "bbox": unknown_bbox,
-        "crop": unknown_crop_rgb,
-    }]
-
     return {"trash_count": len(detections), "detections": detections,
-            "class_counts": class_counts, "unknown_candidates": unknown_candidates}
+            "class_counts": class_counts, "unknown_candidates": []}
 
 
 def sensor_loop():
@@ -228,33 +159,13 @@ def detection_loop():
 def label_federation_loop():
     """Ship any newly-promoted 'unknown_label_N' classes to Pi5 over
     HiveMQ Cloud so every zone's model benefits, and pull down labels
-    that OTHER zones have already had confirmed into the shared registry.
-
-    NOTE: this demo doesn't require a live HiveMQ Cloud connection to
-    show the autonomous label discovery behaviour. If the real publish
-    fails for any reason (e.g. a DNS/name-resolution error because
-    config.HIVEMQ_HOST is still a placeholder or unreachable), we don't
-    crash or block — we just log that the discovery happened and was
-    reported, so the pipeline keeps demonstrating Claim 4 end-to-end."""
+    that OTHER zones have already had confirmed into the shared registry."""
     while running:
         for entry in label_disc.pop_pending_labels():
-            sent = False
-            try:
-                sent = fc.submit_label_proposal(entry)
-            except Exception as e:
-                log.debug("HiveMQ publish raised %s: %s", type(e).__name__, e)
-
-            if sent:
+            if fc.submit_label_proposal(entry):
                 log.info("Label proposal '%s' sent to Pi5", entry["label"])
             else:
-                # Couldn't actually reach HiveMQ Cloud (e.g. name resolution
-                # error) — still report the discovery as claimed/sent so the
-                # rest of the demo flow isn't blocked on real connectivity.
-                log.warning(
-                    "New unknown object '%s' detected (%d occurrences) — "
-                    "claimed as sent to HiveMQ Cloud",
-                    entry["label"], entry.get("sample_count", 0),
-                )
+                log.warning("Failed to send label proposal '%s' (will not retry)", entry["label"])
 
         registry = fc.get_label_registry()
         if registry:
@@ -276,21 +187,14 @@ def communication_loop():
         now = time.time()
 
         if not registered:
-            try:
-                registered = fc.register()
-            except Exception as e:
-                log.debug("HiveMQ register() raised %s: %s", type(e).__name__, e)
-                registered = False
+            registered = fc.register()
             if not registered:
                 log.warning("HiveMQ Cloud registration pending — will retry in 10 s")
                 time.sleep(10)
                 continue
 
         if now - last_hb >= config.HEARTBEAT_INTERVAL:
-            try:
-                fc.heartbeat()
-            except Exception as e:
-                log.debug("HiveMQ heartbeat() raised %s: %s", type(e).__name__, e)
+            fc.heartbeat()
             last_hb = now
 
         if now - last_send >= config.SEND_INTERVAL:
@@ -318,10 +222,7 @@ def communication_loop():
                 "unknown_candidate_count": len(latest_detection.get("unknown_candidates", [])),
             }
 
-            try:
-                fc.send_data(data, detection_summary, anomalies)
-            except Exception as e:
-                log.debug("HiveMQ send_data() raised %s: %s", type(e).__name__, e)
+            fc.send_data(data, detection_summary, anomalies)
             last_send = now
             log.info("Data sent to Pi5 (HiveMQ)  |  temp=%.1f  pH=%.2f  turb=%.0f  trash=%d  anomalies=%d",
                      data.get("temperature", 0), data.get("ph", 0),
@@ -351,21 +252,11 @@ def federation_loop():
                       "(cv_dnn/onnx backends don't support live weight sync)")
             continue
 
-        try:
-            submitted = fc.submit_update(weights)
-        except Exception as e:
-            log.debug("HiveMQ submit_update() raised %s: %s", type(e).__name__, e)
-            submitted = False
-
-        if not submitted:
+        if not fc.submit_update(weights):
             log.warning("Federation: failed to submit update")
             continue
 
-        try:
-            global_data = fc.get_global_weights()
-        except Exception as e:
-            log.debug("HiveMQ get_global_weights() raised %s: %s", type(e).__name__, e)
-            global_data = None
+        global_data = fc.get_global_weights()
         if global_data and global_data.get("weights"):
             new_round = global_data.get("round", 0)
             if new_round > last_round:
@@ -385,18 +276,9 @@ def main():
     sensor.start()
 
     # 2. Start HiveMQ Cloud connection (Pi4 <-> Pi5)
-    # If this fails (e.g. name-resolution error because HIVEMQ_HOST is a
-    # placeholder/unreachable), we don't stop the node — detection, anomaly
-    # detection, and label discovery all keep running locally, and
-    # label_federation_loop() will just log discoveries as claimed/sent
-    # instead of blocking on a real connection.
-    try:
-        if not fc.start():
-            log.error("Could not start HiveMQ Cloud client — check config.py credentials. "
-                       "Continuing in local-only mode (no federation / dashboard sync).")
-    except Exception as e:
-        log.error("HiveMQ Cloud start() raised %s: %s — continuing in local-only mode",
-                   type(e).__name__, e)
+    if not fc.start():
+        log.error("Could not start HiveMQ Cloud client — check config.py credentials. "
+                   "Continuing in local-only mode (no federation / dashboard sync).")
 
     # 3. Load YOLOv8 model & open camera
     model_ok = detector.load_model()
